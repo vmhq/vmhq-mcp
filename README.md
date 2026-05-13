@@ -61,6 +61,7 @@ services:
 # MCP server
 MCP_PORT=3010
 HOST_PORT=3010
+MCP_PUBLIC_URL=https://mcp.example.com
 MCP_ACCESS_TOKEN=change-me
 
 # Service base URLs
@@ -90,11 +91,11 @@ Ejemplo de configuracion remota:
 
 ```toml
 [mcp_servers.vmhq]
-url = "https://tu-dominio/mcp"
+url = "https://mcp.example.com/mcp"
 bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 ```
 
-El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor.
+El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor. `MCP_PUBLIC_URL` es opcional para ejecutar el servidor, pero sirve para documentar y exponer en `/health` la URL publica que deben usar los clientes MCP.
 
 ## Herramientas MCP
 

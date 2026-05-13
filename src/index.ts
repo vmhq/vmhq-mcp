@@ -37,6 +37,7 @@ const httpServer = Bun.serve({
       return json({
         status: "ok",
         name: "vmhq-mcp",
+        mcpUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp` : undefined,
         services: config.services.map((service) => service.id),
       });
     }
@@ -65,6 +66,9 @@ const httpServer = Bun.serve({
 });
 
 console.log(`vmhq-mcp listening on http://0.0.0.0:${config.port}/mcp`);
+if (config.publicUrl) {
+  console.log(`public MCP URL: ${config.publicUrl.replace(/\/$/, "")}/mcp`);
+}
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

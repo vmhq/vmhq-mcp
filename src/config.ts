@@ -18,6 +18,7 @@ function bearerAuth(tokenEnv: string): ServiceAuth {
 
 export type AppConfig = {
   port: number;
+  publicUrl?: string;
   accessToken: string;
   services: ServiceDefinition[];
 };
@@ -28,6 +29,7 @@ export function loadConfig(): AppConfig {
 
   return {
     port: Number(readEnv("MCP_PORT", "3010")),
+    publicUrl: readEnv("MCP_PUBLIC_URL") || undefined,
     accessToken: requireEnv("MCP_ACCESS_TOKEN"),
     services: [
       {
