@@ -13,7 +13,11 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - Proxmox: `https://pve.vmhq.cl`
 - Memos: `https://memos.vmhq.cl`
 
-Cada servicio expone una herramienta MCP generica `*_request` para llamar cualquier endpoint de su API sin entregar los tokens al agente.
+Cada servicio expone tres tipos de herramientas:
+
+- `*_api_reference`: muestra las operaciones documentadas que conoce el MCP.
+- `*_operation`: ejecuta una operacion documentada por `operationId`.
+- `*_request`: llama cualquier endpoint relativo como escape hatch para endpoints nuevos o no catalogados.
 
 ## Desarrollo local
 
@@ -50,14 +54,49 @@ El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el 
 
 ## Herramientas MCP
 
-- `home_assistant_request`
-- `miniflux_request`
-- `karakeep_request`
-- `searxng_request`
-- `proxmox_request`
-- `memos_request`
+Por cada servicio existen:
 
-Todas reciben:
+- `home_assistant_api_reference`, `home_assistant_operation`, `home_assistant_request`
+- `miniflux_api_reference`, `miniflux_operation`, `miniflux_request`
+- `karakeep_api_reference`, `karakeep_operation`, `karakeep_request`
+- `searxng_api_reference`, `searxng_operation`, `searxng_request`
+- `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
+- `memos_api_reference`, `memos_operation`, `memos_request`
+
+Flujo recomendado para agentes:
+
+1. Consultar `*_api_reference` con `group` o `search`.
+2. Elegir un `operationId`.
+3. Ejecutar `*_operation` con `pathParams`, `query` y/o `body`.
+4. Usar `*_request` solo cuando la documentacion del servicio tenga un endpoint que aun no este en el catalogo local.
+
+Ejemplo:
+
+```json
+{
+  "operationId": "list_entries",
+  "query": {
+    "status": "unread",
+    "limit": 20
+  }
+}
+```
+
+Ejemplo con parametros de ruta:
+
+```json
+{
+  "operationId": "qemu_start",
+  "pathParams": {
+    "node": "pve",
+    "vmid": 101
+  }
+}
+```
+
+## Llamadas libres
+
+Las herramientas `*_request` reciben:
 
 - `method`: `GET`, `POST`, `PUT`, `PATCH` o `DELETE`.
 - `path`: ruta relativa dentro del servicio, por ejemplo `/api/v1/entries`.
@@ -66,3 +105,14 @@ Todas reciben:
 - `headers`: headers adicionales opcionales, filtrados para no permitir reemplazar auth.
 
 La respuesta devuelve status, headers utiles y cuerpo en texto o JSON.
+
+## Fuentes de API verificadas
+
+El catalogo local se construyo desde la documentacion oficial revisada el 2026-05-13:
+
+- Home Assistant REST API: https://developers.home-assistant.io/docs/api/rest/
+- Miniflux API: https://miniflux.app/docs/api.html
+- Karakeep API: https://docs.karakeep.app/api/karakeep-api/
+- SearXNG Search API: https://docs.searxng.org/dev/search_api.html
+- Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
+- Memos API latest: https://usememos.com/docs/api/latest

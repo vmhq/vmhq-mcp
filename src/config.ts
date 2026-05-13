@@ -24,7 +24,7 @@ export type AppConfig = {
 
 export function loadConfig(): AppConfig {
   const minifluxAuthMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
-  const proxmoxPrefix = readEnv("PROXMOX_AUTH_PREFIX", "PVEAPIToken");
+  const proxmoxPrefix = readEnv("PROXMOX_AUTH_PREFIX", "PVEAPIToken=");
 
   return {
     port: Number(readEnv("MCP_PORT", "3010")),
@@ -52,7 +52,7 @@ export function loadConfig(): AppConfig {
         title: "Karakeep",
         baseUrl: readEnv("KARAKEEP_BASE_URL", "https://karakeep.vmhq.cl"),
         auth: bearerAuth("KARAKEEP_TOKEN"),
-        defaultPathPrefix: "/api",
+        defaultPathPrefix: "/api/v1",
       },
       {
         id: "searxng",
@@ -73,7 +73,7 @@ export function loadConfig(): AppConfig {
         title: "Memos",
         baseUrl: readEnv("MEMOS_BASE_URL", "https://memos.vmhq.cl"),
         auth: bearerAuth("MEMOS_TOKEN"),
-        defaultPathPrefix: "/api",
+        defaultPathPrefix: "/api/v1",
       },
     ],
   };

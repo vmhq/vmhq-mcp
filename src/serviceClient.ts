@@ -34,7 +34,7 @@ function authHeaders(service: ServiceDefinition): Record<string, string> {
     return { [service.auth.headerName]: token };
   }
 
-  return { Authorization: `${service.auth.prefix} ${token}` };
+  return { Authorization: `${service.auth.prefix}${token}` };
 }
 
 function cleanHeaders(headers: Record<string, string> | undefined): Record<string, string> {
@@ -49,6 +49,18 @@ function cleanHeaders(headers: Record<string, string> | undefined): Record<strin
   }
 
   return cleaned;
+}
+
+export function interpolatePath(path: string, pathParams: Record<string, string | number> = {}): string {
+  return path.replace(/\{([^}]+)\}/g, (_match, key: string) => {
+    const value = pathParams[key];
+
+    if (value === undefined || value === null) {
+      throw new Error(`Missing required path parameter: ${key}`);
+    }
+
+    return encodeURIComponent(String(value));
+  });
 }
 
 function buildUrl(service: ServiceDefinition, input: ServiceRequestInput): URL {

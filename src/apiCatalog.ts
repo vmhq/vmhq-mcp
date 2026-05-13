@@ -1,0 +1,283 @@
+import type { ServiceId, ServiceMethod } from "./services.js";
+
+export type ApiEndpoint = {
+  operationId: string;
+  method: ServiceMethod;
+  path: string;
+  summary: string;
+  group: string;
+  query?: string[];
+  body?: string;
+  notes?: string;
+  destructive?: boolean;
+};
+
+export type ApiCatalog = {
+  service: ServiceId;
+  title: string;
+  docsUrl: string;
+  checkedAt: string;
+  auth: string;
+  pagination?: string;
+  notes: string[];
+  endpoints: ApiEndpoint[];
+};
+
+const checkedAt = "2026-05-13";
+
+export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
+  home_assistant: {
+    service: "home_assistant",
+    title: "Home Assistant REST API",
+    docsUrl: "https://developers.home-assistant.io/docs/api/rest/",
+    checkedAt,
+    auth: "Bearer token in Authorization header.",
+    notes: [
+      "Home Assistant exposes dynamic domain services at /api/services/{domain}/{service}; discover available services first with home_assistant_operation:get_services.",
+      "POST /api/states/{entity_id} only changes Home Assistant state representation. It does not control the physical device; use call_service for device actions.",
+      "Some services require or reject the return_response query flag depending on whether the service returns data.",
+    ],
+    endpoints: [
+      { operationId: "ping", method: "GET", path: "/api/", group: "system", summary: "Check that the API is reachable." },
+      { operationId: "get_config", method: "GET", path: "/api/config", group: "system", summary: "Return current Home Assistant configuration." },
+      { operationId: "get_events", method: "GET", path: "/api/events", group: "discovery", summary: "List available event types." },
+      { operationId: "get_services", method: "GET", path: "/api/services", group: "discovery", summary: "List available service domains and services." },
+      { operationId: "get_states", method: "GET", path: "/api/states", group: "state", summary: "List all entity states." },
+      { operationId: "get_state", method: "GET", path: "/api/states/{entity_id}", group: "state", summary: "Get one entity state." },
+      { operationId: "set_state", method: "POST", path: "/api/states/{entity_id}", group: "state", summary: "Create or update an entity state representation.", body: "State object.", destructive: true },
+      { operationId: "fire_event", method: "POST", path: "/api/events/{event_type}", group: "events", summary: "Fire an event.", body: "Optional event_data object.", destructive: true },
+      { operationId: "call_service", method: "POST", path: "/api/services/{domain}/{service}", group: "services", summary: "Call a Home Assistant service.", query: ["return_response"], body: "service_data object.", destructive: true },
+      { operationId: "render_template", method: "POST", path: "/api/template", group: "template", summary: "Render a Home Assistant template.", body: "{ template: string }" },
+      { operationId: "check_config", method: "POST", path: "/api/config/core/check_config", group: "system", summary: "Trigger configuration.yaml validation.", destructive: true },
+      { operationId: "handle_intent", method: "POST", path: "/api/intent/handle", group: "intent", summary: "Handle an intent.", body: "Intent request object." },
+      { operationId: "get_error_log", method: "GET", path: "/api/error_log", group: "logs", summary: "Return Home Assistant error log as plain text." },
+      { operationId: "get_history", method: "GET", path: "/api/history/period/{timestamp}", group: "history", summary: "Return state history since timestamp.", query: ["filter_entity_id", "end_time", "minimal_response", "no_attributes", "significant_changes_only"] },
+      { operationId: "get_logbook", method: "GET", path: "/api/logbook/{timestamp}", group: "history", summary: "Return logbook entries since timestamp.", query: ["entity", "end_time"] },
+      { operationId: "get_calendars", method: "GET", path: "/api/calendars", group: "calendar", summary: "List calendar entities." },
+      { operationId: "get_calendar_events", method: "GET", path: "/api/calendars/{calendar_entity_id}", group: "calendar", summary: "List calendar events in a date range.", query: ["start", "end"] },
+      { operationId: "get_camera_proxy", method: "GET", path: "/api/camera_proxy/{camera_entity_id}", group: "media", summary: "Return camera image proxy content." },
+    ],
+  },
+  miniflux: {
+    service: "miniflux",
+    title: "Miniflux API",
+    docsUrl: "https://miniflux.app/docs/api.html",
+    checkedAt,
+    auth: "X-Auth-Token header by default; bearer mode is configurable with MINIFLUX_AUTH_MODE=bearer.",
+    pagination: "Entry/feed list endpoints use limit/offset and filters documented by Miniflux.",
+    notes: [
+      "Miniflux API paths are rooted at /v1 for core API endpoints.",
+      "The generic miniflux_request tool remains available for endpoints not covered by this operation catalog.",
+    ],
+    endpoints: [
+      { operationId: "get_me", method: "GET", path: "/v1/me", group: "users", summary: "Return authenticated user." },
+      { operationId: "update_me", method: "PUT", path: "/v1/me", group: "users", summary: "Update authenticated user preferences.", body: "User preference fields.", destructive: true },
+      { operationId: "get_users", method: "GET", path: "/v1/users", group: "users", summary: "List users." },
+      { operationId: "create_user", method: "POST", path: "/v1/users", group: "users", summary: "Create a user.", body: "username, password, is_admin, optional identity fields.", destructive: true },
+      { operationId: "get_user", method: "GET", path: "/v1/users/{userID}", group: "users", summary: "Get a user." },
+      { operationId: "update_user", method: "PUT", path: "/v1/users/{userID}", group: "users", summary: "Update a user.", body: "User fields.", destructive: true },
+      { operationId: "delete_user", method: "DELETE", path: "/v1/users/{userID}", group: "users", summary: "Delete a user.", destructive: true },
+      { operationId: "mark_user_entries_read", method: "PUT", path: "/v1/users/{userID}/mark-all-as-read", group: "entries", summary: "Mark all entries for a user as read.", destructive: true },
+      { operationId: "list_categories", method: "GET", path: "/v1/categories", group: "categories", summary: "List categories." },
+      { operationId: "create_category", method: "POST", path: "/v1/categories", group: "categories", summary: "Create a category.", body: "{ title: string, hide_globally?: boolean }", destructive: true },
+      { operationId: "update_category", method: "PUT", path: "/v1/categories/{categoryID}", group: "categories", summary: "Update a category.", body: "Category fields.", destructive: true },
+      { operationId: "refresh_category", method: "PUT", path: "/v1/categories/{categoryID}/refresh", group: "categories", summary: "Refresh all feeds in a category.", destructive: true },
+      { operationId: "delete_category", method: "DELETE", path: "/v1/categories/{categoryID}", group: "categories", summary: "Delete a category.", destructive: true },
+      { operationId: "mark_category_entries_read", method: "PUT", path: "/v1/categories/{categoryID}/mark-all-as-read", group: "entries", summary: "Mark category entries as read.", destructive: true },
+      { operationId: "list_feeds", method: "GET", path: "/v1/feeds", group: "feeds", summary: "List feeds." },
+      { operationId: "create_feed", method: "POST", path: "/v1/feeds", group: "feeds", summary: "Create a feed.", body: "feed_url, category_id and optional crawler/user-agent settings.", destructive: true },
+      { operationId: "get_feed", method: "GET", path: "/v1/feeds/{feedID}", group: "feeds", summary: "Get one feed." },
+      { operationId: "update_feed", method: "PUT", path: "/v1/feeds/{feedID}", group: "feeds", summary: "Update a feed.", body: "Feed fields.", destructive: true },
+      { operationId: "delete_feed", method: "DELETE", path: "/v1/feeds/{feedID}", group: "feeds", summary: "Delete a feed.", destructive: true },
+      { operationId: "refresh_feed", method: "PUT", path: "/v1/feeds/{feedID}/refresh", group: "feeds", summary: "Refresh a feed.", destructive: true },
+      { operationId: "mark_feed_entries_read", method: "PUT", path: "/v1/feeds/{feedID}/mark-all-as-read", group: "entries", summary: "Mark feed entries as read.", destructive: true },
+      { operationId: "get_feed_icon", method: "GET", path: "/v1/feeds/{feedID}/icon", group: "feeds", summary: "Get feed icon metadata." },
+      { operationId: "get_icon", method: "GET", path: "/v1/icons/{iconID}", group: "feeds", summary: "Get icon data by icon ID." },
+      { operationId: "discover_subscriptions", method: "POST", path: "/v1/discover", group: "feeds", summary: "Discover subscriptions from a website.", body: "{ url: string }" },
+      { operationId: "list_entries", method: "GET", path: "/v1/entries", group: "entries", summary: "List/filter entries.", query: ["status", "offset", "limit", "order", "direction", "before", "after", "starred", "search"] },
+      { operationId: "get_entry", method: "GET", path: "/v1/entries/{entryID}", group: "entries", summary: "Get one entry." },
+      { operationId: "update_entries", method: "PUT", path: "/v1/entries", group: "entries", summary: "Update entries status or starred state.", body: "entry_ids plus status/starred fields.", destructive: true },
+      { operationId: "fetch_entry_content", method: "GET", path: "/v1/entries/{entryID}/fetch-content", group: "entries", summary: "Fetch original article content.", query: ["update_content"] },
+      { operationId: "save_entry", method: "POST", path: "/v1/entries/{entryID}/save", group: "entries", summary: "Save entry to configured third-party integrations.", destructive: true },
+      { operationId: "get_enclosure", method: "GET", path: "/v1/enclosures/{enclosureID}", group: "enclosures", summary: "Get enclosure metadata." },
+      { operationId: "update_enclosure", method: "PUT", path: "/v1/enclosures/{enclosureID}", group: "enclosures", summary: "Update enclosure progression.", body: "{ media_progression: number }", destructive: true },
+      { operationId: "export_opml", method: "GET", path: "/v1/export", group: "opml", summary: "Export OPML." },
+      { operationId: "import_opml", method: "POST", path: "/v1/import", group: "opml", summary: "Import OPML XML.", body: "OPML XML body.", destructive: true },
+      { operationId: "flush_history", method: "PUT", path: "/v1/flush-history", group: "maintenance", summary: "Flush read history.", destructive: true },
+      { operationId: "get_counters", method: "GET", path: "/v1/feeds/counters", group: "feeds", summary: "Get read/unread counters per feed." },
+      { operationId: "integrations_status", method: "GET", path: "/integrations/status", group: "integrations", summary: "Check if save integrations are enabled." },
+      { operationId: "list_api_keys", method: "GET", path: "/v1/api-keys", group: "api_keys", summary: "List API keys." },
+      { operationId: "create_api_key", method: "POST", path: "/v1/api-keys", group: "api_keys", summary: "Create an API key.", body: "{ description: string }", destructive: true },
+      { operationId: "delete_api_key", method: "DELETE", path: "/v1/api-keys/{apiKeyID}", group: "api_keys", summary: "Delete an API key.", destructive: true },
+      { operationId: "healthcheck", method: "GET", path: "/healthcheck", group: "system", summary: "Health check." },
+      { operationId: "liveness", method: "GET", path: "/liveness", group: "system", summary: "Liveness check." },
+      { operationId: "readiness", method: "GET", path: "/readiness", group: "system", summary: "Readiness check." },
+      { operationId: "version", method: "GET", path: "/v1/version", group: "system", summary: "Version and build information." },
+    ],
+  },
+  karakeep: {
+    service: "karakeep",
+    title: "Karakeep API",
+    docsUrl: "https://docs.karakeep.app/api/karakeep-api/",
+    checkedAt,
+    auth: "Bearer token in Authorization header.",
+    pagination: "List endpoints use cursor and limit; nextCursor indicates the next page.",
+    notes: [
+      "Karakeep documentation shows endpoint paths relative to the API base; this server defaults to /api/v1.",
+      "Bookmark types are link, text and asset.",
+    ],
+    endpoints: [
+      { operationId: "list_bookmarks", method: "GET", path: "/api/v1/bookmarks", group: "bookmarks", summary: "List bookmarks.", query: ["cursor", "limit", "archived", "favourited", "sort"] },
+      { operationId: "create_bookmark", method: "POST", path: "/api/v1/bookmarks", group: "bookmarks", summary: "Create a link, text or asset bookmark.", body: "Bookmark payload with type-specific fields.", destructive: true },
+      { operationId: "search_bookmarks", method: "GET", path: "/api/v1/bookmarks/search", group: "bookmarks", summary: "Search bookmarks.", query: ["q", "cursor", "limit"] },
+      { operationId: "check_url", method: "GET", path: "/api/v1/bookmarks/url-exists", group: "bookmarks", summary: "Check if a URL already exists.", query: ["url"] },
+      { operationId: "get_bookmark", method: "GET", path: "/api/v1/bookmarks/{bookmarkId}", group: "bookmarks", summary: "Get a bookmark." },
+      { operationId: "update_bookmark", method: "PATCH", path: "/api/v1/bookmarks/{bookmarkId}", group: "bookmarks", summary: "Update a bookmark.", body: "Partial bookmark fields.", destructive: true },
+      { operationId: "delete_bookmark", method: "DELETE", path: "/api/v1/bookmarks/{bookmarkId}", group: "bookmarks", summary: "Delete a bookmark.", destructive: true },
+      { operationId: "summarize_bookmark", method: "POST", path: "/api/v1/bookmarks/{bookmarkId}/summarize", group: "bookmarks", summary: "Generate or refresh bookmark summary.", destructive: true },
+      { operationId: "attach_bookmark_tags", method: "POST", path: "/api/v1/bookmarks/{bookmarkId}/tags", group: "tags", summary: "Attach tags to a bookmark.", body: "Tag list.", destructive: true },
+      { operationId: "detach_bookmark_tag", method: "DELETE", path: "/api/v1/bookmarks/{bookmarkId}/tags/{tagId}", group: "tags", summary: "Detach a tag from a bookmark.", destructive: true },
+      { operationId: "bookmark_lists", method: "GET", path: "/api/v1/bookmarks/{bookmarkId}/lists", group: "lists", summary: "Get lists containing a bookmark." },
+      { operationId: "bookmark_highlights", method: "GET", path: "/api/v1/bookmarks/{bookmarkId}/highlights", group: "highlights", summary: "Get bookmark highlights." },
+      { operationId: "attach_asset", method: "POST", path: "/api/v1/bookmarks/{bookmarkId}/assets", group: "assets", summary: "Attach an asset to a bookmark.", body: "Asset upload payload.", destructive: true },
+      { operationId: "replace_asset", method: "PUT", path: "/api/v1/bookmarks/{bookmarkId}/assets/{assetId}", group: "assets", summary: "Replace bookmark asset.", body: "Asset upload payload.", destructive: true },
+      { operationId: "detach_asset", method: "DELETE", path: "/api/v1/bookmarks/{bookmarkId}/assets/{assetId}", group: "assets", summary: "Detach bookmark asset.", destructive: true },
+      { operationId: "list_lists", method: "GET", path: "/api/v1/lists", group: "lists", summary: "List bookmark lists.", query: ["cursor", "limit"] },
+      { operationId: "create_list", method: "POST", path: "/api/v1/lists", group: "lists", summary: "Create a manual or smart list.", body: "List fields.", destructive: true },
+      { operationId: "get_list", method: "GET", path: "/api/v1/lists/{listId}", group: "lists", summary: "Get a list." },
+      { operationId: "update_list", method: "PATCH", path: "/api/v1/lists/{listId}", group: "lists", summary: "Update a list.", body: "Partial list fields.", destructive: true },
+      { operationId: "delete_list", method: "DELETE", path: "/api/v1/lists/{listId}", group: "lists", summary: "Delete a list.", destructive: true },
+      { operationId: "list_tags", method: "GET", path: "/api/v1/tags", group: "tags", summary: "List tags.", query: ["cursor", "limit"] },
+      { operationId: "create_tag", method: "POST", path: "/api/v1/tags", group: "tags", summary: "Create a tag.", body: "Tag fields.", destructive: true },
+      { operationId: "get_tag", method: "GET", path: "/api/v1/tags/{tagId}", group: "tags", summary: "Get a tag." },
+      { operationId: "update_tag", method: "PATCH", path: "/api/v1/tags/{tagId}", group: "tags", summary: "Update a tag.", body: "Partial tag fields.", destructive: true },
+      { operationId: "delete_tag", method: "DELETE", path: "/api/v1/tags/{tagId}", group: "tags", summary: "Delete a tag.", destructive: true },
+      { operationId: "list_highlights", method: "GET", path: "/api/v1/highlights", group: "highlights", summary: "List highlights.", query: ["cursor", "limit"] },
+      { operationId: "get_asset", method: "GET", path: "/api/v1/assets/{assetId}", group: "assets", summary: "Get/download an asset." },
+      { operationId: "get_current_user", method: "GET", path: "/api/v1/users/me", group: "users", summary: "Get current user." },
+      { operationId: "create_backup", method: "POST", path: "/api/v1/backups", group: "backups", summary: "Create a backup.", destructive: true },
+      { operationId: "list_backups", method: "GET", path: "/api/v1/backups", group: "backups", summary: "List backups." },
+    ],
+  },
+  searxng: {
+    service: "searxng",
+    title: "SearXNG Search API",
+    docsUrl: "https://docs.searxng.org/dev/search_api.html",
+    checkedAt,
+    auth: "Usually no auth; optional bearer token supported if SEARXNG_TOKEN is set.",
+    notes: [
+      "SearXNG supports GET or POST on / and /search.",
+      "JSON/CSV/RSS responses require format=json/csv/rss and must be enabled in the instance settings.",
+    ],
+    endpoints: [
+      { operationId: "search", method: "GET", path: "/search", group: "search", summary: "Run a search query.", query: ["q", "format", "categories", "engines", "language", "pageno", "time_range", "safesearch"] },
+      { operationId: "search_post", method: "POST", path: "/search", group: "search", summary: "Run a search query with form-style parameters.", body: "Search parameters.", query: ["q", "format"] },
+      { operationId: "root_search", method: "GET", path: "/", group: "search", summary: "Run search through root endpoint.", query: ["q", "format"] },
+      { operationId: "preferences", method: "GET", path: "/preferences", group: "meta", summary: "Open preferences page/API response depending on instance config." },
+      { operationId: "stats", method: "GET", path: "/stats", group: "meta", summary: "Instance statistics if enabled." },
+      { operationId: "config", method: "GET", path: "/config", group: "meta", summary: "Instance config if enabled." },
+    ],
+  },
+  proxmox: {
+    service: "proxmox",
+    title: "Proxmox VE API",
+    docsUrl: "https://pve.proxmox.com/pve-docs/api-viewer/index.html",
+    checkedAt,
+    auth: "API token in Authorization header, format: PVEAPIToken=USER@REALM!TOKENID=SECRET.",
+    notes: [
+      "Proxmox VE formally defines the whole API with JSON Schema; the API viewer and pvesh are generated from the same schema.",
+      "This catalog covers the main REST tree. Use proxmox_request for any schema endpoint not explicitly listed here.",
+      "API tokens do not require CSRF tokens for write requests.",
+    ],
+    endpoints: [
+      { operationId: "version", method: "GET", path: "/api2/json/version", group: "system", summary: "Get Proxmox VE version." },
+      { operationId: "cluster_resources", method: "GET", path: "/api2/json/cluster/resources", group: "cluster", summary: "List cluster resources.", query: ["type"] },
+      { operationId: "cluster_status", method: "GET", path: "/api2/json/cluster/status", group: "cluster", summary: "Get cluster status." },
+      { operationId: "cluster_tasks", method: "GET", path: "/api2/json/cluster/tasks", group: "tasks", summary: "List cluster tasks.", query: ["start", "limit", "errors"] },
+      { operationId: "nextid", method: "GET", path: "/api2/json/cluster/nextid", group: "cluster", summary: "Get next available VMID." },
+      { operationId: "nodes", method: "GET", path: "/api2/json/nodes", group: "nodes", summary: "List nodes." },
+      { operationId: "node_status", method: "GET", path: "/api2/json/nodes/{node}/status", group: "nodes", summary: "Get node status." },
+      { operationId: "node_version", method: "GET", path: "/api2/json/nodes/{node}/version", group: "nodes", summary: "Get node version." },
+      { operationId: "node_tasks", method: "GET", path: "/api2/json/nodes/{node}/tasks", group: "tasks", summary: "List node tasks.", query: ["start", "limit", "errors"] },
+      { operationId: "task_status", method: "GET", path: "/api2/json/nodes/{node}/tasks/{upid}/status", group: "tasks", summary: "Get task status." },
+      { operationId: "task_log", method: "GET", path: "/api2/json/nodes/{node}/tasks/{upid}/log", group: "tasks", summary: "Get task log.", query: ["start", "limit"] },
+      { operationId: "qemu_list", method: "GET", path: "/api2/json/nodes/{node}/qemu", group: "qemu", summary: "List QEMU VMs on a node." },
+      { operationId: "qemu_config", method: "GET", path: "/api2/json/nodes/{node}/qemu/{vmid}/config", group: "qemu", summary: "Get QEMU VM config." },
+      { operationId: "qemu_create", method: "POST", path: "/api2/json/nodes/{node}/qemu", group: "qemu", summary: "Create QEMU VM.", body: "VM creation parameters.", destructive: true },
+      { operationId: "qemu_update_config", method: "PUT", path: "/api2/json/nodes/{node}/qemu/{vmid}/config", group: "qemu", summary: "Update QEMU VM config.", body: "VM config parameters.", destructive: true },
+      { operationId: "qemu_delete", method: "DELETE", path: "/api2/json/nodes/{node}/qemu/{vmid}", group: "qemu", summary: "Delete QEMU VM.", destructive: true },
+      { operationId: "qemu_start", method: "POST", path: "/api2/json/nodes/{node}/qemu/{vmid}/status/start", group: "qemu", summary: "Start QEMU VM.", destructive: true },
+      { operationId: "qemu_stop", method: "POST", path: "/api2/json/nodes/{node}/qemu/{vmid}/status/stop", group: "qemu", summary: "Stop QEMU VM.", destructive: true },
+      { operationId: "qemu_shutdown", method: "POST", path: "/api2/json/nodes/{node}/qemu/{vmid}/status/shutdown", group: "qemu", summary: "Shutdown QEMU VM.", destructive: true },
+      { operationId: "qemu_reboot", method: "POST", path: "/api2/json/nodes/{node}/qemu/{vmid}/status/reboot", group: "qemu", summary: "Reboot QEMU VM.", destructive: true },
+      { operationId: "qemu_snapshot_list", method: "GET", path: "/api2/json/nodes/{node}/qemu/{vmid}/snapshot", group: "qemu", summary: "List QEMU snapshots." },
+      { operationId: "qemu_snapshot_create", method: "POST", path: "/api2/json/nodes/{node}/qemu/{vmid}/snapshot", group: "qemu", summary: "Create QEMU snapshot.", body: "Snapshot parameters.", destructive: true },
+      { operationId: "lxc_list", method: "GET", path: "/api2/json/nodes/{node}/lxc", group: "lxc", summary: "List LXC containers on a node." },
+      { operationId: "lxc_config", method: "GET", path: "/api2/json/nodes/{node}/lxc/{vmid}/config", group: "lxc", summary: "Get LXC config." },
+      { operationId: "lxc_create", method: "POST", path: "/api2/json/nodes/{node}/lxc", group: "lxc", summary: "Create LXC container.", body: "Container creation parameters.", destructive: true },
+      { operationId: "lxc_update_config", method: "PUT", path: "/api2/json/nodes/{node}/lxc/{vmid}/config", group: "lxc", summary: "Update LXC config.", body: "Container config parameters.", destructive: true },
+      { operationId: "lxc_delete", method: "DELETE", path: "/api2/json/nodes/{node}/lxc/{vmid}", group: "lxc", summary: "Delete LXC container.", destructive: true },
+      { operationId: "lxc_start", method: "POST", path: "/api2/json/nodes/{node}/lxc/{vmid}/status/start", group: "lxc", summary: "Start LXC container.", destructive: true },
+      { operationId: "lxc_stop", method: "POST", path: "/api2/json/nodes/{node}/lxc/{vmid}/status/stop", group: "lxc", summary: "Stop LXC container.", destructive: true },
+      { operationId: "lxc_shutdown", method: "POST", path: "/api2/json/nodes/{node}/lxc/{vmid}/status/shutdown", group: "lxc", summary: "Shutdown LXC container.", destructive: true },
+      { operationId: "storage_list", method: "GET", path: "/api2/json/storage", group: "storage", summary: "List datacenter storage." },
+      { operationId: "node_storage", method: "GET", path: "/api2/json/nodes/{node}/storage", group: "storage", summary: "List node storage." },
+      { operationId: "storage_content", method: "GET", path: "/api2/json/nodes/{node}/storage/{storage}/content", group: "storage", summary: "List storage content.", query: ["content", "vmid"] },
+      { operationId: "upload_storage_content", method: "POST", path: "/api2/json/nodes/{node}/storage/{storage}/upload", group: "storage", summary: "Upload content to storage.", destructive: true },
+      { operationId: "access_users", method: "GET", path: "/api2/json/access/users", group: "access", summary: "List users." },
+      { operationId: "access_groups", method: "GET", path: "/api2/json/access/groups", group: "access", summary: "List groups." },
+      { operationId: "access_roles", method: "GET", path: "/api2/json/access/roles", group: "access", summary: "List roles." },
+      { operationId: "access_acl", method: "GET", path: "/api2/json/access/acl", group: "access", summary: "List ACLs." },
+      { operationId: "pools", method: "GET", path: "/api2/json/pools", group: "pools", summary: "List pools." },
+      { operationId: "pool", method: "GET", path: "/api2/json/pools/{poolid}", group: "pools", summary: "Get pool details." },
+    ],
+  },
+  memos: {
+    service: "memos",
+    title: "Memos API",
+    docsUrl: "https://usememos.com/docs/api/latest",
+    checkedAt,
+    auth: "Bearer token in Authorization header.",
+    pagination: "List operations use pageSize and pageToken.",
+    notes: [
+      "The latest Memos reference tracks the main branch schema and groups endpoints by service.",
+      "Core API paths are rooted at /api/v1.",
+    ],
+    endpoints: [
+      { operationId: "ai_transcribe", method: "POST", path: "/api/v1/ai:transcribe", group: "ai", summary: "Transcribe audio using the instance AI provider.", body: "{ audio: object }" },
+      { operationId: "create_memo", method: "POST", path: "/api/v1/memos", group: "memos", summary: "Create a memo.", query: ["memoId"], body: "Memo object with state, content and visibility.", destructive: true },
+      { operationId: "list_memos", method: "GET", path: "/api/v1/memos", group: "memos", summary: "List memos.", query: ["pageSize", "pageToken", "filter"] },
+      { operationId: "get_memo", method: "GET", path: "/api/v1/memos/{memo}", group: "memos", summary: "Get a memo." },
+      { operationId: "update_memo", method: "PATCH", path: "/api/v1/memos/{memo}", group: "memos", summary: "Update a memo.", query: ["updateMask"], body: "Memo fields.", destructive: true },
+      { operationId: "delete_memo", method: "DELETE", path: "/api/v1/memos/{memo}", group: "memos", summary: "Delete a memo.", destructive: true },
+      { operationId: "get_memo_by_share", method: "GET", path: "/api/v1/memos:by-share", group: "shares", summary: "Get memo by share.", query: ["name"] },
+      { operationId: "create_memo_comment", method: "POST", path: "/api/v1/memos/{memo}/comments", group: "comments", summary: "Create memo comment.", body: "Comment memo object.", destructive: true },
+      { operationId: "list_memo_comments", method: "GET", path: "/api/v1/memos/{memo}/comments", group: "comments", summary: "List memo comments." },
+      { operationId: "list_memo_attachments", method: "GET", path: "/api/v1/memos/{memo}/attachments", group: "attachments", summary: "List memo attachments." },
+      { operationId: "set_memo_attachments", method: "PATCH", path: "/api/v1/memos/{memo}/attachments", group: "attachments", summary: "Set memo attachments.", body: "Attachment list.", destructive: true },
+      { operationId: "list_memo_relations", method: "GET", path: "/api/v1/memos/{memo}/relations", group: "relations", summary: "List memo relations." },
+      { operationId: "set_memo_relations", method: "PATCH", path: "/api/v1/memos/{memo}/relations", group: "relations", summary: "Set memo relations.", body: "Relation list.", destructive: true },
+      { operationId: "list_memo_reactions", method: "GET", path: "/api/v1/memos/{memo}/reactions", group: "reactions", summary: "List memo reactions." },
+      { operationId: "upsert_memo_reaction", method: "POST", path: "/api/v1/memos/{memo}/reactions", group: "reactions", summary: "Create or update memo reaction.", body: "Reaction object.", destructive: true },
+      { operationId: "delete_memo_reaction", method: "DELETE", path: "/api/v1/memos/{memo}/reactions/{reaction}", group: "reactions", summary: "Delete memo reaction.", destructive: true },
+      { operationId: "create_memo_share", method: "POST", path: "/api/v1/memos/{memo}/shares", group: "shares", summary: "Create memo share.", destructive: true },
+      { operationId: "list_memo_shares", method: "GET", path: "/api/v1/memos/{memo}/shares", group: "shares", summary: "List memo shares." },
+      { operationId: "delete_memo_share", method: "DELETE", path: "/api/v1/memos/{memo}/shares/{share}", group: "shares", summary: "Delete memo share.", destructive: true },
+      { operationId: "get_link_metadata", method: "GET", path: "/api/v1/memos:getLinkMetadata", group: "links", summary: "Get metadata for one link.", query: ["link"] },
+      { operationId: "batch_get_link_metadata", method: "GET", path: "/api/v1/memos:batchGetLinkMetadata", group: "links", summary: "Get metadata for multiple links.", query: ["links"] },
+      { operationId: "list_shortcuts", method: "GET", path: "/api/v1/shortcuts", group: "shortcuts", summary: "List shortcuts.", query: ["pageSize", "pageToken"] },
+      { operationId: "create_shortcut", method: "POST", path: "/api/v1/shortcuts", group: "shortcuts", summary: "Create shortcut.", body: "Shortcut object.", destructive: true },
+      { operationId: "get_user", method: "GET", path: "/api/v1/users/{user}", group: "users", summary: "Get user resource." },
+      { operationId: "list_users", method: "GET", path: "/api/v1/users", group: "users", summary: "List users.", query: ["pageSize", "pageToken"] },
+      { operationId: "get_instance_profile", method: "GET", path: "/api/v1/instance/profile", group: "instance", summary: "Get instance profile." },
+    ],
+  },
+};
+
+export function catalogFor(serviceId: ServiceId): ApiCatalog {
+  return API_CATALOGS[serviceId];
+}
+
+export function endpointFor(serviceId: ServiceId, operationId: string): ApiEndpoint | undefined {
+  return API_CATALOGS[serviceId].endpoints.find((endpoint) => endpoint.operationId === operationId);
+}
