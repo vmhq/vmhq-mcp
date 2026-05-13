@@ -101,6 +101,18 @@ bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 
 El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor. `MCP_PUBLIC_URL` es opcional para ejecutar el servidor, pero sirve para documentar y exponer en `/health` la URL publica que deben usar los clientes MCP.
 
+## Configuracion en Claude
+
+En Claude, agrega un conector personalizado con:
+
+```text
+https://mcp.example.com/mcp
+```
+
+Deja vacios los campos avanzados de OAuth Client ID y OAuth Client Secret. El servidor publica metadata OAuth y soporta Dynamic Client Registration, por lo que Claude puede registrarse y obtener su token automaticamente.
+
+No pegues `MCP_ACCESS_TOKEN` en los campos OAuth de Claude. Ese token sigue existiendo para clientes que soportan bearer token directo, como pruebas con `curl` o configuraciones tipo Codex.
+
 ## Herramientas MCP
 
 `vmhq_status` siempre esta disponible y muestra que servicios estan habilitados o deshabilitados.

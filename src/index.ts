@@ -1,8 +1,18 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp.js";
 import { loadConfig } from "./config.js";
+import {
+  authorizationServerMetadata,
+  authorize,
+  exchangeToken,
+  isOAuthAccessToken,
+  protectedResourceMetadata,
+  registerClient,
+  unauthorized,
+} from "./oauth.js";
 
 const config = loadConfig();
+const oauthConfig = { publicUrl: config.publicUrl };
 
 function bearerToken(req: Request): string {
   const authorization = req.headers.get("authorization") ?? "";
@@ -43,6 +53,26 @@ const httpServer = Bun.serve({
       });
     }
 
+    if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+      return protectedResourceMetadata(oauthConfig, req);
+    }
+
+    if (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration") {
+      return authorizationServerMetadata(oauthConfig, req);
+    }
+
+    if (url.pathname === "/oauth/register" && req.method === "POST") {
+      return registerClient(req);
+    }
+
+    if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+      return authorize(req);
+    }
+
+    if (url.pathname === "/oauth/token" && req.method === "POST") {
+      return exchangeToken(req);
+    }
+
     if (url.pathname !== "/mcp") {
       return json({ error: "not_found" }, { status: 404 });
     }
@@ -58,8 +88,9 @@ const httpServer = Bun.serve({
       });
     }
 
-    if (bearerToken(req) !== config.accessToken) {
-      return json({ error: "unauthorized" }, { status: 401 });
+    const token = bearerToken(req);
+    if (token !== config.accessToken && !isOAuthAccessToken(token)) {
+      return unauthorized(oauthConfig, req);
     }
 
     return handleMcp(req);
