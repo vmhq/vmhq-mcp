@@ -1,17 +1,19 @@
 # vmhq-mcp
 
-MCP remoto para exponer APIs personales de VMHQ a agentes de IA desde un unico punto de entrada.
+MCP remoto para exponer APIs personales a agentes de IA desde un unico punto de entrada.
 
 El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKEN`) y mantiene las credenciales reales de cada servicio en variables de entorno del lado servidor.
 
 ## Servicios incluidos
 
-- Home Assistant: `https://iot.vmhq.cl`
-- Miniflux: `https://miniflux.vmhq.cl`
-- Karakeep: `https://karakeep.vmhq.cl`
-- SearXNG: `https://searx.vmhq.cl`
-- Proxmox: `https://pve.vmhq.cl`
-- Memos: `https://memos.vmhq.cl`
+- Home Assistant
+- Miniflux
+- Karakeep
+- SearXNG
+- Proxmox
+- Memos
+
+Las URLs reales de cada servicio se configuran solo en `.env`.
 
 Cada servicio expone tres tipos de herramientas:
 
@@ -38,6 +40,48 @@ http://localhost:3010/mcp
 ```bash
 cp .env.example .env
 docker compose up -d --build
+```
+
+Ejemplo completo:
+
+```yaml
+services:
+  vmhq-mcp:
+    image: ghcr.io/vmhq/vmhq-mcp:latest
+    env_file:
+      - .env
+    ports:
+      - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
+    restart: unless-stopped
+```
+
+## .env de ejemplo
+
+```dotenv
+# MCP server
+MCP_PORT=3010
+HOST_PORT=3010
+MCP_ACCESS_TOKEN=change-me
+
+# Service base URLs
+HOME_ASSISTANT_BASE_URL=https://home-assistant.example.com
+MINIFLUX_BASE_URL=https://miniflux.example.com
+KARAKEEP_BASE_URL=https://karakeep.example.com
+SEARXNG_BASE_URL=https://searxng.example.com
+PROXMOX_BASE_URL=https://proxmox.example.com
+MEMOS_BASE_URL=https://memos.example.com
+
+# Service credentials
+HOME_ASSISTANT_TOKEN=
+MINIFLUX_TOKEN=
+KARAKEEP_TOKEN=
+SEARXNG_TOKEN=
+PROXMOX_TOKEN=
+MEMOS_TOKEN=
+
+# Optional auth/header overrides
+MINIFLUX_AUTH_MODE=x-auth-token
+PROXMOX_AUTH_PREFIX=PVEAPIToken=
 ```
 
 ## Configuracion en Codex

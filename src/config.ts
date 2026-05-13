@@ -33,14 +33,14 @@ export function loadConfig(): AppConfig {
       {
         id: "home_assistant",
         title: "Home Assistant",
-        baseUrl: readEnv("HOME_ASSISTANT_BASE_URL", "https://iot.vmhq.cl"),
+        baseUrl: requireEnv("HOME_ASSISTANT_BASE_URL"),
         auth: bearerAuth("HOME_ASSISTANT_TOKEN"),
         defaultPathPrefix: "/api",
       },
       {
         id: "miniflux",
         title: "Miniflux",
-        baseUrl: readEnv("MINIFLUX_BASE_URL", "https://miniflux.vmhq.cl"),
+        baseUrl: requireEnv("MINIFLUX_BASE_URL"),
         auth:
           minifluxAuthMode === "bearer"
             ? bearerAuth("MINIFLUX_TOKEN")
@@ -50,28 +50,28 @@ export function loadConfig(): AppConfig {
       {
         id: "karakeep",
         title: "Karakeep",
-        baseUrl: readEnv("KARAKEEP_BASE_URL", "https://karakeep.vmhq.cl"),
+        baseUrl: requireEnv("KARAKEEP_BASE_URL"),
         auth: bearerAuth("KARAKEEP_TOKEN"),
         defaultPathPrefix: "/api/v1",
       },
       {
         id: "searxng",
         title: "SearXNG",
-        baseUrl: readEnv("SEARXNG_BASE_URL", "https://searx.vmhq.cl"),
+        baseUrl: requireEnv("SEARXNG_BASE_URL"),
         auth: readEnv("SEARXNG_TOKEN") ? bearerAuth("SEARXNG_TOKEN") : { type: "none" },
         defaultPathPrefix: "/",
       },
       {
         id: "proxmox",
         title: "Proxmox",
-        baseUrl: readEnv("PROXMOX_BASE_URL", "https://pve.vmhq.cl"),
+        baseUrl: requireEnv("PROXMOX_BASE_URL"),
         auth: { type: "prefixed", tokenEnv: "PROXMOX_TOKEN", prefix: proxmoxPrefix },
         defaultPathPrefix: "/api2/json",
       },
       {
         id: "memos",
         title: "Memos",
-        baseUrl: readEnv("MEMOS_BASE_URL", "https://memos.vmhq.cl"),
+        baseUrl: requireEnv("MEMOS_BASE_URL"),
         auth: bearerAuth("MEMOS_TOKEN"),
         defaultPathPrefix: "/api/v1",
       },
