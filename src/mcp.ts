@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { API_CATALOGS, catalogFor, endpointFor } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
-import { SERVICE_METHODS, type ServiceDefinition, type ServiceRequestInput } from "./services.js";
+import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceRequestInput } from "./services.js";
 
 const queryValueSchema = z.union([
   z.string(),
@@ -71,6 +71,30 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
       },
     ],
   });
+
+  server.tool(
+    "vmhq_status",
+    "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
+    {},
+    async () => {
+      const enabled = services.map((service) => service.id);
+      const disabled = (Object.keys(API_CATALOGS) as ServiceId[]).filter((serviceId) => !enabled.includes(serviceId));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: responseText({
+              status: "ok",
+              enabledServices: enabled,
+              disabledServices: disabled,
+              iconUrl,
+            }),
+          },
+        ],
+      };
+    },
+  );
 
   for (const service of services) {
     server.tool(

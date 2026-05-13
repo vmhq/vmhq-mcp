@@ -1,4 +1,4 @@
-import type { ServiceAuth, ServiceDefinition } from "./services.js";
+import type { ServiceAuth, ServiceDefinition, ServiceId } from "./services.js";
 
 function readEnv(name: string, fallback?: string): string {
   return process.env[name] ?? fallback ?? "";
@@ -14,6 +14,28 @@ function requireEnv(name: string): string {
 
 function bearerAuth(tokenEnv: string): ServiceAuth {
   return { type: "bearer", tokenEnv };
+}
+
+function optionalService(
+  id: ServiceId,
+  title: string,
+  baseUrlEnv: string,
+  auth: ServiceAuth,
+  defaultPathPrefix: string,
+): ServiceDefinition | undefined {
+  const baseUrl = readEnv(baseUrlEnv);
+
+  if (!baseUrl) {
+    return undefined;
+  }
+
+  return {
+    id,
+    title,
+    baseUrl,
+    auth,
+    defaultPathPrefix,
+  };
 }
 
 function proxmoxAuth(): ServiceAuth {
@@ -45,58 +67,28 @@ export type AppConfig = {
 
 export function loadConfig(): AppConfig {
   const minifluxAuthMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
+  const services = [
+    optionalService("home_assistant", "Home Assistant", "HOME_ASSISTANT_BASE_URL", bearerAuth("HOME_ASSISTANT_TOKEN"), "/api"),
+    optionalService(
+      "miniflux",
+      "Miniflux",
+      "MINIFLUX_BASE_URL",
+      minifluxAuthMode === "bearer"
+        ? bearerAuth("MINIFLUX_TOKEN")
+        : { type: "header", tokenEnv: "MINIFLUX_TOKEN", headerName: "X-Auth-Token" },
+      "/v1",
+    ),
+    optionalService("karakeep", "Karakeep", "KARAKEEP_BASE_URL", bearerAuth("KARAKEEP_TOKEN"), "/api/v1"),
+    optionalService("searxng", "SearXNG", "SEARXNG_BASE_URL", { type: "none" }, "/"),
+    optionalService("proxmox", "Proxmox", "PROXMOX_BASE_URL", proxmoxAuth(), "/api2/json"),
+    optionalService("memos", "Memos", "MEMOS_BASE_URL", bearerAuth("MEMOS_TOKEN"), "/api/v1"),
+  ].filter((service): service is ServiceDefinition => service !== undefined);
 
   return {
     port: Number(readEnv("MCP_PORT", "3010")),
     publicUrl: readEnv("MCP_PUBLIC_URL") || undefined,
     iconUrl: readEnv("MCP_ICON_URL", "https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png"),
     accessToken: requireEnv("MCP_ACCESS_TOKEN"),
-    services: [
-      {
-        id: "home_assistant",
-        title: "Home Assistant",
-        baseUrl: requireEnv("HOME_ASSISTANT_BASE_URL"),
-        auth: bearerAuth("HOME_ASSISTANT_TOKEN"),
-        defaultPathPrefix: "/api",
-      },
-      {
-        id: "miniflux",
-        title: "Miniflux",
-        baseUrl: requireEnv("MINIFLUX_BASE_URL"),
-        auth:
-          minifluxAuthMode === "bearer"
-            ? bearerAuth("MINIFLUX_TOKEN")
-            : { type: "header", tokenEnv: "MINIFLUX_TOKEN", headerName: "X-Auth-Token" },
-        defaultPathPrefix: "/v1",
-      },
-      {
-        id: "karakeep",
-        title: "Karakeep",
-        baseUrl: requireEnv("KARAKEEP_BASE_URL"),
-        auth: bearerAuth("KARAKEEP_TOKEN"),
-        defaultPathPrefix: "/api/v1",
-      },
-      {
-        id: "searxng",
-        title: "SearXNG",
-        baseUrl: requireEnv("SEARXNG_BASE_URL"),
-        auth: { type: "none" },
-        defaultPathPrefix: "/",
-      },
-      {
-        id: "proxmox",
-        title: "Proxmox",
-        baseUrl: requireEnv("PROXMOX_BASE_URL"),
-        auth: proxmoxAuth(),
-        defaultPathPrefix: "/api2/json",
-      },
-      {
-        id: "memos",
-        title: "Memos",
-        baseUrl: requireEnv("MEMOS_BASE_URL"),
-        auth: bearerAuth("MEMOS_TOKEN"),
-        defaultPathPrefix: "/api/v1",
-      },
-    ],
+    services,
   };
 }

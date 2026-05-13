@@ -13,7 +13,7 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - Proxmox
 - Memos
 
-Las URLs reales de cada servicio se configuran solo en `.env`.
+Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL`, el MCP arranca igual y no registra las herramientas de ese servicio.
 
 Cada servicio expone tres tipos de herramientas:
 
@@ -66,6 +66,7 @@ MCP_ICON_URL=https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png
 MCP_ACCESS_TOKEN=change-me
 
 # Service base URLs
+# Leave a URL empty to disable that service.
 HOME_ASSISTANT_BASE_URL=https://home-assistant.example.com
 MINIFLUX_BASE_URL=https://miniflux.example.com
 KARAKEEP_BASE_URL=https://karakeep.example.com
@@ -101,6 +102,8 @@ bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor. `MCP_PUBLIC_URL` es opcional para ejecutar el servidor, pero sirve para documentar y exponer en `/health` la URL publica que deben usar los clientes MCP.
 
 ## Herramientas MCP
+
+`vmhq_status` siempre esta disponible y muestra que servicios estan habilitados o deshabilitados.
 
 Por cada servicio existen:
 
