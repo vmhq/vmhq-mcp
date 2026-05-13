@@ -12,7 +12,7 @@ const BLOCKED_REQUEST_HEADERS = new Set([
 const RESPONSE_HEADERS = ["content-type", "etag", "last-modified", "x-total-count"];
 
 function serviceToken(service: ServiceDefinition): string {
-  if (service.auth.type === "none") {
+  if (service.auth.type === "none" || service.auth.type === "static") {
     return "";
   }
 
@@ -32,6 +32,10 @@ function authHeaders(service: ServiceDefinition): Record<string, string> {
 
   if (service.auth.type === "header") {
     return { [service.auth.headerName]: token };
+  }
+
+  if (service.auth.type === "static") {
+    return { [service.auth.headerName]: service.auth.value };
   }
 
   return { Authorization: `${service.auth.prefix}${token}` };

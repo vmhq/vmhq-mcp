@@ -16,6 +16,25 @@ function bearerAuth(tokenEnv: string): ServiceAuth {
   return { type: "bearer", tokenEnv };
 }
 
+function proxmoxAuth(): ServiceAuth {
+  const tokenId = readEnv("PROXMOX_TOKEN_ID");
+  const tokenSecret = readEnv("PROXMOX_TOKEN_SECRET");
+
+  if (!tokenId && !tokenSecret) {
+    return { type: "none" };
+  }
+
+  if (!tokenId || !tokenSecret) {
+    throw new Error("PROXMOX_TOKEN_ID and PROXMOX_TOKEN_SECRET must be configured together.");
+  }
+
+  return {
+    type: "static",
+    headerName: "Authorization",
+    value: `PVEAPIToken=${tokenId}=${tokenSecret}`,
+  };
+}
+
 export type AppConfig = {
   port: number;
   publicUrl?: string;
@@ -25,7 +44,6 @@ export type AppConfig = {
 
 export function loadConfig(): AppConfig {
   const minifluxAuthMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
-  const proxmoxPrefix = readEnv("PROXMOX_AUTH_PREFIX", "PVEAPIToken=");
 
   return {
     port: Number(readEnv("MCP_PORT", "3010")),
@@ -67,7 +85,7 @@ export function loadConfig(): AppConfig {
         id: "proxmox",
         title: "Proxmox",
         baseUrl: requireEnv("PROXMOX_BASE_URL"),
-        auth: { type: "prefixed", tokenEnv: "PROXMOX_TOKEN", prefix: proxmoxPrefix },
+        auth: proxmoxAuth(),
         defaultPathPrefix: "/api2/json",
       },
       {

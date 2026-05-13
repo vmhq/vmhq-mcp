@@ -76,12 +76,15 @@ MEMOS_BASE_URL=https://memos.example.com
 HOME_ASSISTANT_TOKEN=
 MINIFLUX_TOKEN=
 KARAKEEP_TOKEN=
-PROXMOX_TOKEN=
 MEMOS_TOKEN=
+
+# Proxmox API token
+# Token ID format: USER@REALM!TOKENID
+PROXMOX_TOKEN_ID=root@pam!mcp
+PROXMOX_TOKEN_SECRET=
 
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
-PROXMOX_AUTH_PREFIX=PVEAPIToken=
 ```
 
 ## Configuracion en Codex

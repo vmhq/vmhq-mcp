@@ -10,7 +10,8 @@ export type ServiceAuth =
   | { type: "none" }
   | { type: "bearer"; tokenEnv: string }
   | { type: "header"; tokenEnv: string; headerName: string }
-  | { type: "prefixed"; tokenEnv: string; prefix: string };
+  | { type: "prefixed"; tokenEnv: string; prefix: string }
+  | { type: "static"; headerName: string; value: string };
 
 export type ServiceDefinition = {
   id: ServiceId;

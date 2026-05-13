@@ -183,7 +183,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     title: "Proxmox VE API",
     docsUrl: "https://pve.proxmox.com/pve-docs/api-viewer/index.html",
     checkedAt,
-    auth: "API token in Authorization header, format: PVEAPIToken=USER@REALM!TOKENID=SECRET.",
+    auth: "API token in Authorization header. Configure PROXMOX_TOKEN_ID as USER@REALM!TOKENID and PROXMOX_TOKEN_SECRET separately; the MCP sends PVEAPIToken=USER@REALM!TOKENID=SECRET.",
     notes: [
       "Proxmox VE formally defines the whole API with JSON Schema; the API viewer and pvesh are generated from the same schema.",
       "This catalog covers the main REST tree. Use proxmox_request for any schema endpoint not explicitly listed here.",
