@@ -164,7 +164,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     title: "SearXNG Search API",
     docsUrl: "https://docs.searxng.org/dev/search_api.html",
     checkedAt,
-    auth: "Usually no auth; optional bearer token supported if SEARXNG_TOKEN is set.",
+    auth: "No authentication token.",
     notes: [
       "SearXNG supports GET or POST on / and /search.",
       "JSON/CSV/RSS responses require format=json/csv/rss and must be enabled in the instance settings.",

@@ -60,7 +60,7 @@ export function loadConfig(): AppConfig {
         id: "searxng",
         title: "SearXNG",
         baseUrl: requireEnv("SEARXNG_BASE_URL"),
-        auth: readEnv("SEARXNG_TOKEN") ? bearerAuth("SEARXNG_TOKEN") : { type: "none" },
+        auth: { type: "none" },
         defaultPathPrefix: "/",
       },
       {
