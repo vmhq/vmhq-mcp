@@ -15,7 +15,7 @@ function json(payload: unknown, init?: ResponseInit): Response {
 }
 
 async function handleMcp(req: Request): Promise<Response> {
-  const server = createMcpServer(config.services);
+  const server = createMcpServer(config.services, config.iconUrl);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
@@ -38,6 +38,7 @@ const httpServer = Bun.serve({
         status: "ok",
         name: "vmhq-mcp",
         mcpUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp` : undefined,
+        iconUrl: config.iconUrl,
         services: config.services.map((service) => service.id),
       });
     }

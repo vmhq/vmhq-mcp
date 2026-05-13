@@ -62,6 +62,7 @@ services:
 MCP_PORT=3010
 HOST_PORT=3010
 MCP_PUBLIC_URL=https://mcp.example.com
+MCP_ICON_URL=https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png
 MCP_ACCESS_TOKEN=change-me
 
 # Service base URLs

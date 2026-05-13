@@ -60,10 +60,16 @@ function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, se
   };
 }
 
-export function createMcpServer(services: ServiceDefinition[]): McpServer {
+export function createMcpServer(services: ServiceDefinition[], iconUrl: string): McpServer {
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
+    icons: [
+      {
+        src: iconUrl,
+        mimeType: "image/png",
+      },
+    ],
   });
 
   for (const service of services) {

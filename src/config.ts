@@ -38,6 +38,7 @@ function proxmoxAuth(): ServiceAuth {
 export type AppConfig = {
   port: number;
   publicUrl?: string;
+  iconUrl: string;
   accessToken: string;
   services: ServiceDefinition[];
 };
@@ -48,6 +49,7 @@ export function loadConfig(): AppConfig {
   return {
     port: Number(readEnv("MCP_PORT", "3010")),
     publicUrl: readEnv("MCP_PUBLIC_URL") || undefined,
+    iconUrl: readEnv("MCP_ICON_URL", "https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png"),
     accessToken: requireEnv("MCP_ACCESS_TOKEN"),
     services: [
       {
