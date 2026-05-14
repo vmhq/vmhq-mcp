@@ -4,7 +4,10 @@ services:
     build:
       context: .
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped

@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type OAuthConfig = {
   publicUrl?: string;
@@ -19,7 +21,52 @@ type AuthorizationCode = {
 
 const clients = new Map<string, Client>();
 const codes = new Map<string, AuthorizationCode>();
-const accessTokens = new Set<string>();
+// token → expiresAt (ms since epoch)
+const accessTokens = new Map<string, number>();
+
+const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json";
+
+function loadState(): void {
+  try {
+    const raw = readFileSync(STATE_PATH, "utf-8");
+    const state = JSON.parse(raw) as {
+      clients?: Array<[string, Client]>;
+      accessTokens?: Array<[string, number]>;
+    };
+
+    if (Array.isArray(state.clients)) {
+      for (const [id, client] of state.clients) {
+        clients.set(id, client);
+      }
+    }
+
+    const now = Date.now();
+    if (Array.isArray(state.accessTokens)) {
+      for (const [token, expiresAt] of state.accessTokens) {
+        if (expiresAt > now) {
+          accessTokens.set(token, expiresAt);
+        }
+      }
+    }
+  } catch {
+    // No state file yet — fresh start
+  }
+}
+
+function saveState(): void {
+  try {
+    mkdirSync(dirname(STATE_PATH), { recursive: true });
+    const state = {
+      clients: [...clients.entries()],
+      accessTokens: [...accessTokens.entries()],
+    };
+    writeFileSync(STATE_PATH, JSON.stringify(state), "utf-8");
+  } catch (err) {
+    console.error("Failed to persist OAuth state", err);
+  }
+}
+
+loadState();
 
 function baseUrl(config: OAuthConfig, req: Request): string {
   if (config.publicUrl) {
@@ -35,7 +82,13 @@ export function mcpUrl(config: OAuthConfig, req: Request): string {
 }
 
 export function isOAuthAccessToken(token: string): boolean {
-  return accessTokens.has(token);
+  const expiresAt = accessTokens.get(token);
+  if (expiresAt === undefined) return false;
+  if (expiresAt <= Date.now()) {
+    accessTokens.delete(token);
+    return false;
+  }
+  return true;
 }
 
 export function unauthorized(config: OAuthConfig, req: Request): Response {
@@ -95,6 +148,7 @@ export async function registerClient(req: Request): Promise<Response> {
     redirectUris,
     clientName: typeof body.client_name === "string" ? body.client_name : undefined,
   });
+  saveState();
 
   return Response.json({
     client_id: clientId,
@@ -235,12 +289,14 @@ export async function exchangeToken(req: Request): Promise<Response> {
   }
 
   const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
-  accessTokens.add(accessToken);
+  const expiresIn = 60 * 60 * 24 * 30;
+  accessTokens.set(accessToken, Date.now() + expiresIn * 1000);
+  saveState();
 
   return Response.json({
     access_token: accessToken,
     token_type: "Bearer",
-    expires_in: 60 * 60 * 24 * 30,
+    expires_in: expiresIn,
     scope: "mcp",
   });
 }

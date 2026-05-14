@@ -62,6 +62,7 @@ export type AppConfig = {
   publicUrl?: string;
   iconUrl: string;
   accessToken: string;
+  corsOrigin?: string;
   services: ServiceDefinition[];
 };
 
@@ -89,6 +90,7 @@ export function loadConfig(): AppConfig {
     publicUrl: readEnv("MCP_PUBLIC_URL") || undefined,
     iconUrl: readEnv("MCP_ICON_URL", "https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png"),
     accessToken: requireEnv("MCP_ACCESS_TOKEN"),
+    corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     services,
   };
 }
