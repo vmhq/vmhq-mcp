@@ -107,7 +107,25 @@ export async function registerClient(req: Request): Promise<Response> {
   });
 }
 
-export function authorize(req: Request): Response {
+function bearerToken(req: Request): string {
+  const authorization = req.headers.get("authorization") ?? "";
+  const [scheme, token] = authorization.split(/\s+/, 2);
+  return scheme?.toLowerCase() === "bearer" ? token ?? "" : "";
+}
+
+export function authorize(req: Request, accessToken: string): Response {
+  if (bearerToken(req) !== accessToken) {
+    return Response.json(
+      { error: "unauthorized", error_description: "Valid Bearer token required to authorize" },
+      {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": "Bearer",
+        },
+      },
+    );
+  }
+
   const url = new URL(req.url);
   const clientId = url.searchParams.get("client_id") ?? "";
   const redirectUri = url.searchParams.get("redirect_uri") ?? "";

@@ -66,7 +66,7 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-      return authorize(req);
+      return authorize(req, config.accessToken);
     }
 
     if (url.pathname === "/oauth/token" && req.method === "POST") {
