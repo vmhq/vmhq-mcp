@@ -251,8 +251,6 @@ const SECURITY_HEADERS = {
 
 export function authorizeForm(req: Request, config: OAuthConfig): Response {
   const url = new URL(req.url);
-  const origin = config.publicUrl ? new URL(config.publicUrl).origin : url.origin;
-  const formAction = new URL("/oauth/authorize", origin).toString();
   const clientId = url.searchParams.get("client_id") ?? "";
   const redirectUri = url.searchParams.get("redirect_uri") ?? "";
   const codeChallenge = url.searchParams.get("code_challenge") ?? "";
@@ -293,7 +291,7 @@ export function authorizeForm(req: Request, config: OAuthConfig): Response {
     <h1>vmhq-mcp</h1>
     <p>Enter your access token to authorize this connection.</p>
     ${errorMessage ? `<div class="error">${escapeHtml(errorMessage)}</div>` : ""}
-    <form method="POST" action="${escapeHtml(formAction)}">
+    <form method="POST" action="/oauth/authorize">
       <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
       <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}">
