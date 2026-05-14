@@ -49,11 +49,16 @@ services:
   vmhq-mcp:
     image: ghcr.io/vmhq/vmhq-mcp:latest
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
 ```
+
+El volumen `./data` persiste el estado OAuth (clientes registrados y tokens) entre reinicios del contenedor.
 
 ## .env de ejemplo
 
@@ -87,6 +92,12 @@ PROXMOX_TOKEN_SECRET=
 
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
+
+# Optional security settings
+# Restrict CORS to a specific origin (e.g. https://claude.ai). Defaults to *.
+# MCP_CORS_ORIGIN=https://claude.ai
+# Path for persisting OAuth state inside the container (matches the ./data:/app/data volume).
+# MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
 ```
 
 ## Configuracion en Codex

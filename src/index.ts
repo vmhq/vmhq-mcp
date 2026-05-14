@@ -50,7 +50,6 @@ const httpServer = Bun.serve({
         name: "vmhq-mcp",
         mcpUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp` : undefined,
         iconUrl: config.iconUrl,
-        services: config.services.map((service) => service.id),
       });
     }
 
@@ -88,7 +87,7 @@ const httpServer = Bun.serve({
         headers: {
           "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version",
           "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Origin": config.corsOrigin ?? "*",
         },
       });
     }
