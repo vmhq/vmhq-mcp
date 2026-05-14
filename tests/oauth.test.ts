@@ -60,6 +60,42 @@ describe("OAuth", () => {
     expect(response.status).toBe(400);
   });
 
+  test("accepts loopback redirect URIs at registration (RFC 8252)", async () => {
+    for (const uri of ["http://localhost:12345/callback", "http://127.0.0.1:9000/cb", "http://[::1]:8080/cb"]) {
+      const response = await oauth.registerClient(
+        new Request("https://mcp.example.com/oauth/register", {
+          method: "POST",
+          body: JSON.stringify({ redirect_uris: [uri], client_name: "Native App" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      expect(response.status).toBe(200);
+    }
+  });
+
+  test("rejects loopback redirect URIs with https scheme", async () => {
+    const response = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://localhost/callback"] }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    // https://localhost is blocked (unusual / not standard loopback pattern)
+    expect(response.status).toBe(400);
+  });
+
+  test("accepts private-use URI scheme redirect URIs at registration (RFC 8252)", async () => {
+    const response = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["claude://callback"], client_name: "Claude Desktop" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(response.status).toBe(200);
+  });
+
   test("authorize form includes security headers and relative form action", async () => {
     const response = oauth.authorizeForm(new Request("https://mcp.example.com/oauth/authorize"), {});
     const html = await response.text();
@@ -211,5 +247,46 @@ describe("OAuth", () => {
     );
 
     expect(replayResponse.status).toBe(400);
+  });
+
+  test("token exchange accepts JSON body", async () => {
+    const redirectUri = "http://127.0.0.1:9876/callback";
+    const clientId = await register(redirectUri);
+    const verifier = "json-verifier-test-12345";
+    const challenge = s256(verifier);
+
+    const authResponse = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "server-secret",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      }),
+      "server-secret",
+      {},
+    );
+
+    expect(authResponse.status).toBe(303);
+    const code = new URL(authResponse.headers.get("location")!).searchParams.get("code");
+
+    const tokenResponse = await oauth.exchangeToken(
+      new Request("https://mcp.example.com/oauth/token", {
+        method: "POST",
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri,
+          client_id: clientId,
+          code_verifier: verifier,
+        }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    expect(tokenResponse.status).toBe(200);
+    const tokenBody = (await tokenResponse.json()) as { access_token: string; token_type: string };
+    expect(tokenBody.token_type).toBe("Bearer");
+    expect(oauth.isOAuthAccessToken(tokenBody.access_token)).toBe(true);
   });
 });
