@@ -1,54 +1,68 @@
 /**
- * OAuth 2.0 + PKCE server implementation for MCP.
+ * OAuth 2.1 implementation for MCP servers.
  *
- * Standards: RFC 6749 (Authorization Code), RFC 7636 (PKCE),
- *            RFC 7591 (Dynamic Client Registration), RFC 8414 (AS Metadata),
- *            RFC 9728 (Protected Resource Metadata), RFC 8252 (Native Apps)
+ * Standards implemented:
+ *   RFC 6749  – OAuth 2.0
+ *   RFC 7636  – PKCE
+ *   RFC 8252  – OAuth 2.0 for Native Apps (loopback port-agnostic matching)
+ *   RFC 8414  – Authorization Server Metadata
+ *   RFC 8707  – Resource Indicators
+ *   RFC 9728  – OAuth 2.0 Protected Resource Metadata
  */
-
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { log } from "./logger.js";
 
-// ── Public config ──────────────────────────────────────────────────────────
+// ─── Public config ────────────────────────────────────────────────────────────
 
 export type OAuthConfig = {
   publicUrl?: string;
   iconUrl?: string;
 };
 
-// ── Storage types ──────────────────────────────────────────────────────────
+// ─── Internal types ───────────────────────────────────────────────────────────
 
-type OAuthClient = {
-  id: string;
+type RegisteredClient = {
+  clientId: string;
+  clientIdIssuedAt: number;
   redirectUris: string[];
-  name?: string;
+  clientName?: string;
 };
 
-type AuthCode = {
+type AuthorizationCode = {
   clientId: string;
+  /** Exact redirect URI used in the authorize request (stored for validation) */
   redirectUri: string;
   codeChallenge: string;
+  scopes: string[];
+  /** RFC 8707 resource indicator (optional) */
+  resource?: string;
   expiresAt: number;
 };
 
-// ── In-memory state ────────────────────────────────────────────────────────
+type StoredToken = {
+  clientId: string;
+  scopes: string[];
+  resource?: string;
+  expiresAt: number;
+};
 
-const clients = new Map<string, OAuthClient>();
-const codes = new Map<string, AuthCode>();
-// token SHA-256 hash → expiresAt timestamp (ms since epoch)
-const tokens = new Map<string, number>();
+// ─── In-memory state ──────────────────────────────────────────────────────────
 
-// ── Constants ──────────────────────────────────────────────────────────────
+const clients = new Map<string, RegisteredClient>();
+const codes = new Map<string, AuthorizationCode>();
+/** token SHA-256 hash → StoredToken */
+const accessTokens = new Map<string, StoredToken>();
+
+// ─── Persistence ──────────────────────────────────────────────────────────────
 
 const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json";
-const CODE_TTL_MS = 5 * 60 * 1000;          // 5 minutes
+const CODE_TTL_MS = 5 * 60 * 1000;          // 5 min
 const TOKEN_TTL_S = 60 * 60 * 24 * 90;      // 90 days
 
-// ── Crypto ─────────────────────────────────────────────────────────────────
-
-function digest(value: string): string {
+function sha256(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
 }
 
@@ -58,36 +72,45 @@ export function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
-// ── State persistence ──────────────────────────────────────────────────────
-
 function loadState(): void {
   try {
     const raw = readFileSync(STATE_PATH, "utf-8");
-    const data = JSON.parse(raw) as {
-      clients?: Array<[string, OAuthClient]>;
-      tokens?: Array<[string, number]>;
+    const saved = JSON.parse(raw) as {
+      clients?: Array<[string, RegisteredClient]>;
+      accessTokens?: Array<[string, StoredToken | number]>;
     };
 
-    if (Array.isArray(data.clients)) {
-      for (const [id, c] of data.clients) clients.set(id, c);
+    if (Array.isArray(saved.clients)) {
+      for (const [id, c] of saved.clients) clients.set(id, c);
     }
 
     const now = Date.now();
-    if (Array.isArray(data.tokens)) {
-      for (const [h, exp] of data.tokens) {
-        if (exp > now) tokens.set(h, exp);
+    if (Array.isArray(saved.accessTokens)) {
+      for (const [hash, data] of saved.accessTokens) {
+        // Backwards-compat: old format stored just a number (expiresAt)
+        if (typeof data === "number") {
+          if (data > now) {
+            accessTokens.set(hash, { clientId: "legacy", scopes: ["mcp"], expiresAt: data });
+          }
+        } else if (typeof data === "object" && data !== null && data.expiresAt > now) {
+          accessTokens.set(hash, data);
+        }
       }
     }
   } catch {
-    // First run — no state file yet
+    // Fresh start — no persisted state yet
   }
 }
 
 function saveState(): void {
   try {
     mkdirSync(dirname(STATE_PATH), { recursive: true });
+    const payload = {
+      clients: [...clients.entries()],
+      accessTokens: [...accessTokens.entries()],
+    };
     const tmp = `${STATE_PATH}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ clients: [...clients.entries()], tokens: [...tokens.entries()] }), "utf-8");
+    writeFileSync(tmp, JSON.stringify(payload), "utf-8");
     chmodSync(tmp, 0o600);
     renameSync(tmp, STATE_PATH);
     chmodSync(STATE_PATH, 0o600);
@@ -98,66 +121,119 @@ function saveState(): void {
 
 export function pruneExpiredOAuthState(now = Date.now()): void {
   let dirty = false;
-  for (const [code, c] of codes) {
-    if (c.expiresAt <= now) { codes.delete(code); dirty = true; }
+
+  for (const [code, ac] of codes) {
+    if (ac.expiresAt <= now) { codes.delete(code); dirty = true; }
   }
-  for (const [h, exp] of tokens) {
-    if (exp <= now) { tokens.delete(h); dirty = true; }
+  for (const [hash, tok] of accessTokens) {
+    if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
   }
+
   if (dirty) saveState();
 }
 
 loadState();
 setInterval(() => pruneExpiredOAuthState(), 60 * 60 * 1000).unref?.();
 
-// ── URL helpers ────────────────────────────────────────────────────────────
+// ─── URL helpers ──────────────────────────────────────────────────────────────
 
-function root(config: OAuthConfig, req: Request): string {
-  return config.publicUrl?.replace(/\/$/, "") ?? new URL(req.url).origin;
+function baseUrl(config: OAuthConfig, req: Request): string {
+  return config.publicUrl ? config.publicUrl.replace(/\/$/, "") : new URL(req.url).origin;
 }
 
 export function mcpUrl(config: OAuthConfig, req: Request): string {
-  return `${root(config, req)}/mcp`;
+  return `${baseUrl(config, req)}/mcp`;
 }
 
-// ── Shared headers ─────────────────────────────────────────────────────────
+// ─── CORS headers (required for browser-based OAuth discovery) ────────────────
 
 export const OAUTH_CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
+} as const;
 
-const FORM_HEADERS = {
+// ─── Redirect URI validation ──────────────────────────────────────────────────
+
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Returns true if a redirect URI is allowed for registration.
+ * Accepts: loopback http, private-use schemes (native apps), HTTPS.
+ */
+function isRegistrableRedirectUri(uri: string): boolean {
+  try {
+    const p = new URL(uri);
+    if (p.username || p.password || p.hash) return false;
+
+    // RFC 8252 §8.3 – loopback: must use http (not https)
+    if (LOOPBACK.has(p.hostname)) return p.protocol === "http:";
+
+    // RFC 8252 §7.1 – private-use URI schemes (e.g. claude://, myapp://)
+    if (p.protocol !== "https:" && p.protocol !== "http:") return true;
+
+    // Standard HTTPS
+    return p.protocol === "https:" && p.hostname !== "0.0.0.0" && !p.hostname.includes("*");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * RFC 8252 §7.3 – when matching redirect URIs at authorize time, loopback
+ * addresses must accept any port (native clients bind an ephemeral port).
+ * All other URIs require an exact match.
+ */
+function redirectUriMatches(requested: string, registered: string): boolean {
+  if (requested === registered) return true;
+  try {
+    const req = new URL(requested);
+    const reg = new URL(registered);
+    if (!LOOPBACK.has(req.hostname)) return false;
+    // Same scheme, host, path and search — ignore port
+    return (
+      req.protocol === reg.protocol &&
+      req.hostname === reg.hostname &&
+      req.pathname === reg.pathname &&
+      req.search === reg.search
+    );
+  } catch {
+    return false;
+  }
+}
+
+// ─── OAuth endpoints ──────────────────────────────────────────────────────────
+
+const FORM_SECURITY_HEADERS = {
   "Content-Security-Policy":
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
-};
+} as const;
 
-// ── Discovery metadata ─────────────────────────────────────────────────────
-
+/** 401 response with RFC 9728 WWW-Authenticate header */
 export function unauthorized(config: OAuthConfig, req: Request): Response {
-  const base = root(config, req);
+  const root = baseUrl(config, req);
   return Response.json(
     { error: "unauthorized" },
     {
       status: 401,
       headers: {
-        "WWW-Authenticate": `Bearer realm="${base}", resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+        "WWW-Authenticate": `Bearer realm="${root}", resource_metadata="${root}/.well-known/oauth-protected-resource"`,
         ...OAUTH_CORS_HEADERS,
       },
     },
   );
 }
 
+/** RFC 9728 – /.well-known/oauth-protected-resource */
 export function protectedResourceMetadata(config: OAuthConfig, req: Request): Response {
-  const base = root(config, req);
+  const root = baseUrl(config, req);
   return Response.json(
     {
-      resource: `${base}/mcp`,
-      authorization_servers: [base],
+      resource: `${root}/mcp`,
+      authorization_servers: [root],
       bearer_methods_supported: ["header"],
       scopes_supported: ["mcp"],
     },
@@ -165,15 +241,16 @@ export function protectedResourceMetadata(config: OAuthConfig, req: Request): Re
   );
 }
 
+/** RFC 8414 – /.well-known/oauth-authorization-server */
 export function authorizationServerMetadata(config: OAuthConfig, req: Request): Response {
-  const base = root(config, req);
+  const root = baseUrl(config, req);
   return Response.json(
     {
-      issuer: base,
-      authorization_endpoint: `${base}/oauth/authorize`,
-      token_endpoint: `${base}/oauth/token`,
-      registration_endpoint: `${base}/oauth/register`,
-      revocation_endpoint: `${base}/oauth/revoke`,
+      issuer: root,
+      authorization_endpoint: `${root}/oauth/authorize`,
+      token_endpoint: `${root}/oauth/token`,
+      registration_endpoint: `${root}/oauth/register`,
+      revocation_endpoint: `${root}/oauth/revoke`,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code"],
       code_challenge_methods_supported: ["S256"],
@@ -185,127 +262,97 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
   );
 }
 
-// ── Redirect URI validation (RFC 8252) ────────────────────────────────────
-
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-function isValidRedirectUri(uri: string): boolean {
-  try {
-    const u = new URL(uri);
-
-    // No credentials or fragments allowed in any redirect URI
-    if (u.username || u.password || u.hash) return false;
-
-    // RFC 8252 §8.3: loopback must use http (any port)
-    if (LOOPBACK.has(u.hostname)) return u.protocol === "http:";
-
-    // RFC 8252 §7.1: private-use URI schemes (non http/https)
-    if (u.protocol !== "http:" && u.protocol !== "https:") return true;
-
-    // All other http (non-loopback) are rejected
-    if (u.protocol !== "https:") return false;
-
-    // https with wildcard or 0.0.0.0 are rejected
-    if (u.hostname === "0.0.0.0" || u.hostname.includes("*")) return false;
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ── Dynamic Client Registration (RFC 7591) ─────────────────────────────────
-
+/** RFC 7591 – dynamic client registration */
 export async function registerClient(req: Request): Promise<Response> {
-  let body: Record<string, unknown>;
-  try {
-    body = (await req.json()) as Record<string, unknown>;
-  } catch {
-    return Response.json({ error: "invalid_request" }, { status: 400, headers: OAUTH_CORS_HEADERS });
-  }
+  let body: Record<string, unknown> = {};
+  try { body = await req.json() as Record<string, unknown>; } catch { /* empty body */ }
 
   const redirectUris = Array.isArray(body.redirect_uris)
-    ? (body.redirect_uris as unknown[]).filter(
-        (u): u is string => typeof u === "string" && isValidRedirectUri(u),
-      )
+    ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string" && isRegistrableRedirectUri(u))
     : [];
 
   if (redirectUris.length === 0) {
     return Response.json({ error: "invalid_redirect_uris" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
 
-  const id = `vmhq_${randomBytes(18).toString("base64url")}`;
-  clients.set(id, {
-    id,
+  const clientId = `vmhq_${randomBytes(18).toString("base64url")}`;
+  const clientIdIssuedAt = Math.floor(Date.now() / 1000);
+  const client: RegisteredClient = {
+    clientId,
+    clientIdIssuedAt,
     redirectUris,
-    name: typeof body.client_name === "string" ? body.client_name : undefined,
-  });
+    clientName: typeof body.client_name === "string" ? body.client_name : undefined,
+  };
+  clients.set(clientId, client);
   saveState();
 
-  log("info", "oauth_client_registered", { clientId: id, redirectUriCount: redirectUris.length });
+  log("info", "oauth_client_registered", { clientId, redirectUriCount: redirectUris.length });
 
   return Response.json(
     {
-      client_id: id,
-      client_id_issued_at: Math.floor(Date.now() / 1000),
+      client_id: clientId,
+      client_id_issued_at: clientIdIssuedAt,
       redirect_uris: redirectUris,
       token_endpoint_auth_method: "none",
       grant_types: ["authorization_code"],
       response_types: ["code"],
       scope: "mcp",
+      ...(client.clientName ? { client_name: client.clientName } : {}),
     },
-    { headers: OAUTH_CORS_HEADERS },
+    { status: 201, headers: OAUTH_CORS_HEADERS },
   );
 }
 
-// ── Authorization form ─────────────────────────────────────────────────────
+// ─── Authorization form ───────────────────────────────────────────────────────
 
-function esc(s: string): string {
+function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 export function authorizeForm(req: Request, _config: OAuthConfig): Response {
-  const p = new URL(req.url).searchParams;
-  const error = p.get("error");
-  const msgs: Record<string, string> = {
+  const url = new URL(req.url);
+  const get = (k: string) => url.searchParams.get(k) ?? "";
+
+  const errorMessages: Record<string, string> = {
     "1": "Invalid token. Please try again.",
     client_not_found: "Client not found. The application may need to re-register.",
-    invalid_redirect_uri: "The redirect URI is not allowed. It must use HTTPS and must not be a localhost address.",
+    invalid_redirect_uri: "The redirect URI is not registered for this client.",
     invalid_pkce: "PKCE validation failed. The client must use S256 code challenge method.",
   };
-  const errMsg = error ? (msgs[error] ?? "An error occurred. Please try again.") : "";
-
-  const hidden = (["client_id", "redirect_uri", "code_challenge", "code_challenge_method", "state"] as const)
-    .map((k) => `<input type="hidden" name="${k}" value="${esc(p.get(k) ?? "")}">`)
-    .join("\n      ");
+  const errorMsg = get("error") ? (errorMessages[get("error")] ?? "An error occurred. Please try again.") : "";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Authorize — vmhq-mcp</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
     .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:2rem;width:100%;max-width:380px}
-    h1{font-size:1.25rem;margin-bottom:.5rem}
-    p{color:#888;font-size:.9rem;margin-bottom:1.5rem}
+    h1{margin:0 0 .5rem;font-size:1.25rem}
+    p{margin:0 0 1.5rem;color:#888;font-size:.9rem}
     label{display:block;margin-bottom:.4rem;font-size:.85rem;color:#aaa}
-    input[type=password]{width:100%;padding:.6rem .8rem;border-radius:8px;border:1px solid #333;background:#111;color:#e0e0e0;font-size:1rem;outline:none}
+    input[type=password]{width:100%;box-sizing:border-box;padding:.6rem .8rem;border-radius:8px;border:1px solid #333;background:#111;color:#e0e0e0;font-size:1rem;outline:none}
     input[type=password]:focus{border-color:#555}
     button{margin-top:1rem;width:100%;padding:.7rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
     button:hover{background:#2563eb}
-    .err{color:#f87171;font-size:.85rem;margin-bottom:1rem}
+    .error{color:#f87171;font-size:.85rem;margin-bottom:1rem}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>vmhq-mcp</h1>
     <p>Enter your access token to authorize this connection.</p>
-    ${errMsg ? `<div class="err">${esc(errMsg)}</div>` : ""}
+    ${errorMsg ? `<div class="error">${escapeHtml(errorMsg)}</div>` : ""}
     <form method="POST" action="/oauth/authorize">
-      ${hidden}
+      <input type="hidden" name="client_id" value="${escapeHtml(get("client_id"))}">
+      <input type="hidden" name="redirect_uri" value="${escapeHtml(get("redirect_uri"))}">
+      <input type="hidden" name="code_challenge" value="${escapeHtml(get("code_challenge"))}">
+      <input type="hidden" name="code_challenge_method" value="${escapeHtml(get("code_challenge_method"))}">
+      <input type="hidden" name="state" value="${escapeHtml(get("state"))}">
+      <input type="hidden" name="scope" value="${escapeHtml(get("scope"))}">
+      <input type="hidden" name="resource" value="${escapeHtml(get("resource"))}">
       <label for="token">Access Token</label>
       <input type="password" id="token" name="token" autofocus placeholder="vmhq_…" autocomplete="current-password">
       <button type="submit">Authorize</button>
@@ -314,133 +361,231 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
 </body>
 </html>`;
 
-  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_HEADERS } });
+  return new Response(html, {
+    headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
+  });
 }
 
-// ── Authorization endpoint (POST) ──────────────────────────────────────────
+// ─── POST /oauth/authorize ────────────────────────────────────────────────────
 
-export async function authorize(req: Request, accessToken: string, _config: OAuthConfig): Promise<Response> {
-  const fd = await req.formData();
-  const get = (k: string) => String(fd.get(k) ?? "");
+async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
+  const ct = req.headers.get("content-type") ?? "";
+  if (ct.includes("application/json")) {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v ?? "")]));
+  }
+  const form = await req.formData();
+  return Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
+}
 
-  const token = get("token");
-  const clientId = get("client_id");
-  const redirectUri = get("redirect_uri");
-  const codeChallenge = get("code_challenge");
-  const codeChallengeMethod = get("code_challenge_method");
-  const state = fd.get("state") as string | null;
+function authorizeErrorRedirect(
+  config: OAuthConfig,
+  req: Request,
+  params: {
+    clientId: string;
+    redirectUri: string;
+    codeChallenge: string;
+    codeChallengeMethod: string;
+    state?: string;
+    scope?: string;
+    resource?: string;
+    error: string;
+  },
+): Response {
+  const sp = new URLSearchParams({
+    client_id: params.clientId,
+    redirect_uri: params.redirectUri,
+    code_challenge: params.codeChallenge,
+    code_challenge_method: params.codeChallengeMethod,
+    error: params.error,
+  });
+  if (params.state) sp.set("state", params.state);
+  if (params.scope) sp.set("scope", params.scope);
+  if (params.resource) sp.set("resource", params.resource);
 
-  const errorRedirect = (reason: string): Response => {
-    const qs = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: reason });
-    if (state) qs.set("state", state);
-    return new Response(null, { status: 303, headers: { Location: `/oauth/authorize?${qs}` } });
-  };
+  const origin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
+  return Response.redirect(new URL(`/oauth/authorize?${sp}`, origin).toString(), 303);
+}
 
-  if (!constantTimeEqual(token, accessToken)) {
+export async function authorize(req: Request, serverToken: string, config: OAuthConfig): Promise<Response> {
+  const form = await parseFormOrJson(req);
+  const {
+    token = "",
+    client_id: clientId = "",
+    redirect_uri: redirectUri = "",
+    code_challenge: codeChallenge = "",
+    code_challenge_method: codeChallengeMethod = "",
+    state,
+    scope = "mcp",
+    resource = "",
+  } = form;
+
+  const errCtx = { clientId, redirectUri, codeChallenge, codeChallengeMethod, state, scope, resource };
+
+  // 1. Validate the server secret the user typed
+  if (!constantTimeEqual(token, serverToken)) {
     log("info", "oauth_authorize_invalid_token", { clientId });
-    return errorRedirect("1");
+    return authorizeErrorRedirect(config, req, { ...errCtx, error: "1" });
   }
 
+  // 2. Client must exist and redirect URI must be registered (port-agnostic for loopback)
   const client = clients.get(clientId);
   if (!client) {
     log("error", "oauth_authorize_client_not_found", { clientId });
-    return errorRedirect("client_not_found");
+    return authorizeErrorRedirect(config, req, { ...errCtx, error: "client_not_found" });
   }
-
-  if (!client.redirectUris.includes(redirectUri) || !isValidRedirectUri(redirectUri)) {
+  const matchedUri = client.redirectUris.find((r) => redirectUriMatches(redirectUri, r));
+  if (!matchedUri || !isRegistrableRedirectUri(redirectUri)) {
     log("error", "oauth_authorize_invalid_redirect_uri", { clientId, redirectUri });
-    return errorRedirect("invalid_redirect_uri");
+    return authorizeErrorRedirect(config, req, { ...errCtx, error: "invalid_redirect_uri" });
   }
 
+  // 3. PKCE: must be S256
   if (!codeChallenge || codeChallengeMethod !== "S256") {
     log("error", "oauth_authorize_invalid_pkce", { clientId });
-    return errorRedirect("invalid_pkce");
+    return authorizeErrorRedirect(config, req, { ...errCtx, error: "invalid_pkce" });
   }
 
+  // 4. Issue authorization code
   pruneExpiredOAuthState();
 
   const code = randomBytes(24).toString("base64url");
-  codes.set(code, { clientId, redirectUri, codeChallenge, expiresAt: Date.now() + CODE_TTL_MS });
+  const scopes = scope ? scope.split(/\s+/).filter(Boolean) : ["mcp"];
 
-  const dest = new URL(redirectUri);
-  dest.searchParams.set("code", code);
-  if (state) dest.searchParams.set("state", state);
+  codes.set(code, {
+    clientId,
+    redirectUri,
+    codeChallenge,
+    scopes,
+    resource: resource || undefined,
+    expiresAt: Date.now() + CODE_TTL_MS,
+  });
+
+  const redirect = new URL(redirectUri);
+  redirect.searchParams.set("code", code);
+  if (state) redirect.searchParams.set("state", state);
 
   log("info", "oauth_authorization_code_issued", { clientId });
-
-  return Response.redirect(dest.toString(), 303);
+  return Response.redirect(redirect.toString(), 303);
 }
 
-// ── Token endpoint (RFC 6749 §4.1.3 + RFC 7636) ───────────────────────────
-
-async function parseBody(req: Request): Promise<Record<string, string>> {
-  const ct = req.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) {
-    const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-    return Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v ?? "")]));
-  }
-  const fd = await req.formData();
-  return Object.fromEntries([...fd.entries()].map(([k, v]) => [k, String(v)]));
-}
+// ─── POST /oauth/token ────────────────────────────────────────────────────────
 
 export async function exchangeToken(req: Request): Promise<Response> {
-  const p = await parseBody(req);
+  const params = await parseFormOrJson(req);
+  const {
+    grant_type: grantType = "",
+    code = "",
+    redirect_uri: redirectUri = "",
+    client_id: clientId = "",
+    code_verifier: codeVerifier = "",
+    resource = "",
+  } = params;
 
-  if (p.grant_type !== "authorization_code") {
+  if (grantType !== "authorization_code") {
     return Response.json({ error: "unsupported_grant_type" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
 
-  const authCode = codes.get(p.code ?? "");
-  codes.delete(p.code ?? ""); // always single-use, including failed attempts
+  const ac = codes.get(code);
+  // Single-use: delete immediately (even on failure)
+  codes.delete(code);
 
-  if (!authCode || authCode.expiresAt < Date.now()) {
+  if (!ac) {
     return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
-
-  if (authCode.clientId !== p.client_id || authCode.redirectUri !== p.redirect_uri) {
+  if (ac.expiresAt < Date.now()) {
     return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
-
-  // Verify PKCE S256: SHA-256(code_verifier) == code_challenge
-  if (digest(p.code_verifier ?? "") !== authCode.codeChallenge) {
+  if (ac.clientId !== clientId) {
     return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
+  // RFC 8252 §7.3: match redirect URI port-agnostic for loopback
+  if (!redirectUriMatches(redirectUri, ac.redirectUri)) {
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
+  }
+  // PKCE S256 verification
+  if (sha256(codeVerifier) !== ac.codeChallenge) {
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
+  }
+  // RFC 8707: if resource was bound at authorize time it must match token request
+  if (ac.resource && resource && ac.resource !== resource) {
+    return Response.json({ error: "invalid_target" }, { status: 400, headers: OAUTH_CORS_HEADERS });
+  }
 
-  const token = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
-  tokens.set(digest(token), Date.now() + TOKEN_TTL_S * 1000);
+  const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
+  const expiresAt = Date.now() + TOKEN_TTL_S * 1000;
+  accessTokens.set(sha256(accessToken), {
+    clientId,
+    scopes: ac.scopes,
+    resource: ac.resource,
+    expiresAt,
+  });
   saveState();
 
-  log("info", "oauth_access_token_issued", { clientId: p.client_id, expiresIn: TOKEN_TTL_S });
+  log("info", "oauth_access_token_issued", { clientId, expiresIn: TOKEN_TTL_S });
 
   return Response.json(
-    { access_token: token, token_type: "Bearer", expires_in: TOKEN_TTL_S, scope: "mcp" },
+    {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: TOKEN_TTL_S,
+      scope: ac.scopes.join(" "),
+    },
     { headers: OAUTH_CORS_HEADERS },
   );
 }
 
-// ── Token revocation (RFC 7009) ────────────────────────────────────────────
+// ─── POST /oauth/revoke ───────────────────────────────────────────────────────
 
 export async function revokeToken(req: Request): Promise<Response> {
-  const p = await parseBody(req);
-  if (!p.token) {
-    return Response.json({ error: "invalid_request" }, { status: 400, headers: OAUTH_CORS_HEADERS });
-  }
-  const existed = tokens.delete(digest(p.token));
+  const params = await parseFormOrJson(req);
+  const token = params.token ?? "";
+  if (!token) return Response.json({ error: "invalid_request" }, { status: 400, headers: OAUTH_CORS_HEADERS });
+
+  const existed = accessTokens.delete(sha256(token));
   if (existed) saveState();
+
   return Response.json({}, { headers: OAUTH_CORS_HEADERS });
 }
 
-// ── Token validation ───────────────────────────────────────────────────────
+// ─── Token verification ───────────────────────────────────────────────────────
 
+/**
+ * Returns true if the token is a valid, non-expired OAuth access token.
+ * Use `verifyAccessToken` when you need the full AuthInfo.
+ */
 export function isOAuthAccessToken(token: string): boolean {
   if (!token) return false;
-  const h = digest(token);
-  const exp = tokens.get(h);
-  if (exp === undefined) return false;
-  if (exp <= Date.now()) {
-    tokens.delete(h);
+  const hash = sha256(token);
+  const stored = accessTokens.get(hash);
+  if (!stored) return false;
+  if (stored.expiresAt <= Date.now()) {
+    accessTokens.delete(hash);
     saveState();
     return false;
   }
   return true;
+}
+
+/**
+ * Verifies an OAuth access token and returns structured AuthInfo.
+ * Returns undefined if the token is invalid or expired.
+ */
+export function verifyAccessToken(token: string): AuthInfo | undefined {
+  if (!token) return undefined;
+  const hash = sha256(token);
+  const stored = accessTokens.get(hash);
+  if (!stored) return undefined;
+  if (stored.expiresAt <= Date.now()) {
+    accessTokens.delete(hash);
+    saveState();
+    return undefined;
+  }
+  return {
+    token,
+    clientId: stored.clientId,
+    scopes: stored.scopes,
+    expiresAt: Math.floor(stored.expiresAt / 1000),
+    ...(stored.resource ? { resource: new URL(stored.resource) } : {}),
+  };
 }

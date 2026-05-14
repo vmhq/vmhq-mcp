@@ -8,12 +8,12 @@ import {
   authorizeForm,
   constantTimeEqual,
   exchangeToken,
-  isOAuthAccessToken,
   OAUTH_CORS_HEADERS,
   protectedResourceMetadata,
   registerClient,
   revokeToken,
   unauthorized,
+  verifyAccessToken,
 } from "./oauth.js";
 import { checkRateLimit } from "./rateLimit.js";
 
@@ -42,14 +42,16 @@ function secureResponse(resp: Response): Response {
   return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
 
-async function handleMcp(req: Request): Promise<Response> {
+async function handleMcp(req: Request, token: string): Promise<Response> {
   const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
 
+  const authInfo = verifyAccessToken(token);
+
   try {
-    return await transport.handleRequest(req);
+    return await transport.handleRequest(req, { authInfo });
   } catch (error) {
     console.error("MCP request failed", error);
     return json({ error: "mcp_request_failed" }, { status: 500 });
@@ -150,11 +152,14 @@ const httpServer = Bun.serve({
     }
 
     const token = bearerToken(req);
-    if (!constantTimeEqual(token, config.accessToken) && !isOAuthAccessToken(token)) {
+    const isStaticToken = constantTimeEqual(token, config.accessToken);
+    const isOauth = !isStaticToken && !!verifyAccessToken(token);
+
+    if (!isStaticToken && !isOauth) {
       return unauthorized(oauthConfig, req);
     }
 
-    const response = await handleMcp(req);
+    const response = await handleMcp(req, isOauth ? token : "");
     log("info", "mcp_request_finished", {
       method: req.method,
       path: url.pathname,
