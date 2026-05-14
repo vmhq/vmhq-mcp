@@ -9,6 +9,7 @@ import {
   constantTimeEqual,
   exchangeToken,
   isOAuthAccessToken,
+  OAUTH_CORS_HEADERS,
   protectedResourceMetadata,
   registerClient,
   revokeToken,
@@ -75,7 +76,21 @@ const httpServer = Bun.serve({
       }));
     }
 
-    if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+    // CORS preflight for OAuth and discovery endpoints
+    if (req.method === "OPTIONS" && (
+      url.pathname.startsWith("/.well-known/") ||
+      url.pathname.startsWith("/oauth/")
+    )) {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          ...OAUTH_CORS_HEADERS,
+          "Access-Control-Max-Age": "86400",
+        },
+      });
+    }
+
+    if (url.pathname === "/.well-known/oauth-protected-resource") {
       return secureResponse(protectedResourceMetadata(oauthConfig, req));
     }
 
