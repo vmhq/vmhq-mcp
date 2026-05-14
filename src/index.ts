@@ -91,14 +91,14 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-      return secureResponse(authorizeForm(req));
+      return secureResponse(authorizeForm(req, oauthConfig));
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_authorize")) {
         return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
       }
-      return secureResponse(await authorize(req, config.accessToken));
+      return secureResponse(await authorize(req, config.accessToken, oauthConfig));
     }
 
     if (url.pathname === "/oauth/token" && req.method === "POST") {

@@ -235,9 +235,10 @@ const SECURITY_HEADERS = {
   "X-Frame-Options": "DENY",
 };
 
-export function authorizeForm(req: Request): Response {
+export function authorizeForm(req: Request, config: OAuthConfig): Response {
   const url = new URL(req.url);
-  const formAction = new URL("/oauth/authorize", url.origin).toString();
+  const origin = config.publicUrl ? new URL(config.publicUrl).origin : url.origin;
+  const formAction = new URL("/oauth/authorize", origin).toString();
   const clientId = url.searchParams.get("client_id") ?? "";
   const redirectUri = url.searchParams.get("redirect_uri") ?? "";
   const codeChallenge = url.searchParams.get("code_challenge") ?? "";
@@ -287,7 +288,7 @@ export function authorizeForm(req: Request): Response {
   return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS } });
 }
 
-export async function authorize(req: Request, accessToken: string): Promise<Response> {
+export async function authorize(req: Request, accessToken: string, config: OAuthConfig): Promise<Response> {
   const form = await req.formData();
   const token = String(form.get("token") ?? "");
   const clientId = String(form.get("client_id") ?? "");
@@ -299,7 +300,8 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
   if (!constantTimeEqual(token, accessToken)) {
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
     if (state) params.set("state", state);
-    return Response.redirect(new URL(`/oauth/authorize?${params}`, req.url).toString(), 303);
+    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
+    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
   }
 
   const client = clients.get(clientId);
