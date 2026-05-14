@@ -165,6 +165,8 @@ El servicio `perplexity` expone tres operaciones que corresponden a los tres mod
 | `search_sonar_reasoning_pro` | `perplexity/sonar-reasoning-pro` | Medio | Comparaciones, sintesis de fuentes contradictorias, recomendaciones con justificacion logica. |
 | `deep_research` | `perplexity/sonar-deep-research` | Lento | Informes de mercado, revision de literatura, investigaciones con muchas fuentes citadas. |
 
+Cuando usas `perplexity_operation`, el modelo se inyecta automaticamente segun el `operationId`. Puedes omitir `body.model` en llamadas normales; solo incluyelo si necesitas sobreescribir el modelo deliberadamente.
+
 Las respuestas incluyen citas inline (`[1]`, `[2]`, ...) en el contenido y un array `citations` con las URLs en la raiz de la respuesta.
 
 Al final de cada respuesta entregada al usuario debe aparecer la firma:
@@ -181,7 +183,6 @@ Ejemplo de llamada con `perplexity_operation`:
 {
   "operationId": "search_sonar_pro",
   "body": {
-    "model": "perplexity/sonar-pro",
     "messages": [{ "role": "user", "content": "¿Cual es el precio actual del Bitcoin?" }],
     "max_tokens": 1024
   }

@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { API_CATALOGS, catalogFor, endpointFor } from "./apiCatalog.js";
+import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceRequestInput } from "./services.js";
 
@@ -51,6 +51,26 @@ function responseText(payload: unknown, maxLength?: number): string {
   }
 
   return compact;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+export function operationBody(endpoint: ApiEndpoint, inputBody: unknown): unknown {
+  if (!endpoint.defaultBody) {
+    return inputBody;
+  }
+
+  if (inputBody === undefined) {
+    return { ...endpoint.defaultBody };
+  }
+
+  if (!isPlainObject(inputBody)) {
+    return inputBody;
+  }
+
+  return { ...endpoint.defaultBody, ...inputBody };
 }
 
 function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, search?: string): unknown {
@@ -171,7 +191,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
             method: endpoint.method,
             path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
             query: input.query,
-            body: input.body,
+            body: operationBody(endpoint, input.body),
             headers: input.headers,
             fields: input.fields,
             maxLength: input.maxLength,
