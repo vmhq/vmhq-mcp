@@ -20,9 +20,17 @@ function serviceToken(service: ServiceDefinition): string {
 }
 
 function authHeaders(service: ServiceDefinition): Record<string, string> {
+  if (service.auth.type === "none") {
+    return {};
+  }
+
+  if (service.auth.type === "static") {
+    return { [service.auth.headerName]: service.auth.value };
+  }
+
   const token = serviceToken(service);
 
-  if (service.auth.type === "none" || !token) {
+  if (!token) {
     return {};
   }
 
@@ -32,10 +40,6 @@ function authHeaders(service: ServiceDefinition): Record<string, string> {
 
   if (service.auth.type === "header") {
     return { [service.auth.headerName]: token };
-  }
-
-  if (service.auth.type === "static") {
-    return { [service.auth.headerName]: service.auth.value };
   }
 
   return { Authorization: `${service.auth.prefix}${token}` };
