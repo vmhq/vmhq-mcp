@@ -60,24 +60,24 @@ describe("OAuth", () => {
     expect(response.status).toBe(400);
   });
 
-  test("authorize form includes security headers and absolute form action", async () => {
+  test("authorize form includes security headers and relative form action", async () => {
     const response = oauth.authorizeForm(new Request("https://mcp.example.com/oauth/authorize"), {});
     const html = await response.text();
 
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(html).toContain('action="https://mcp.example.com/oauth/authorize"');
+    expect(html).toContain('action="/oauth/authorize"');
   });
 
-  test("authorize form uses publicUrl as form action origin when set", async () => {
+  test("authorize form uses relative form action regardless of publicUrl", async () => {
     const response = oauth.authorizeForm(
       new Request("http://127.0.0.1:3000/oauth/authorize"),
       { publicUrl: "https://mcp.public.example.com" },
     );
     const html = await response.text();
 
-    expect(html).toContain('action="https://mcp.public.example.com/oauth/authorize"');
+    expect(html).toContain('action="/oauth/authorize"');
   });
 
   test("authorize form shows error messages from error query param", async () => {
