@@ -14,7 +14,7 @@ export type RateLimitConfig = {
 };
 
 const defaultConfigs: Record<string, RateLimitConfig> = {
-  "oauth_authorize": { maxRequests: 5, windowMs: 60_000 },
+  "oauth_authorize": { maxRequests: 10, windowMs: 60_000 },
   "oauth_register": { maxRequests: 3, windowMs: 60_000 },
   "oauth_token": { maxRequests: 10, windowMs: 60_000 },
   "oauth_revoke": { maxRequests: 5, windowMs: 60_000 },

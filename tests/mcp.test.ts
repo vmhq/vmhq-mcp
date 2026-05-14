@@ -44,7 +44,23 @@ describe("Perplexity operation defaults", () => {
     });
   });
 
-  test("operationBody preserves non-object bodies", () => {
+  test("operationBody parses JSON string and injects default model", () => {
+    const endpoint = API_CATALOGS.perplexity.endpoints.find((item) => item.operationId === "search_sonar_pro");
+    expect(endpoint).toBeTruthy();
+
+    const body = operationBody(
+      endpoint!,
+      JSON.stringify({ messages: [{ role: "user", content: "Hello" }], max_tokens: 512 }),
+    );
+
+    expect(body).toEqual({
+      model: "perplexity/sonar-pro",
+      messages: [{ role: "user", content: "Hello" }],
+      max_tokens: 512,
+    });
+  });
+
+  test("operationBody preserves non-JSON string bodies", () => {
     const endpoint = API_CATALOGS.perplexity.endpoints.find((item) => item.operationId === "search_sonar_pro");
     expect(endpoint).toBeTruthy();
 

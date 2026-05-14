@@ -80,6 +80,84 @@ describe("OAuth", () => {
     expect(html).toContain('action="https://mcp.public.example.com/oauth/authorize"');
   });
 
+  test("authorize form shows error messages from error query param", async () => {
+    const tests = [
+      { error: "1", expected: "Invalid token" },
+      { error: "client_not_found", expected: "Client not found" },
+      { error: "invalid_redirect_uri", expected: "redirect URI is not allowed" },
+      { error: "invalid_pkce", expected: "PKCE validation failed" },
+    ];
+
+    for (const { error, expected } of tests) {
+      const response = oauth.authorizeForm(
+        new Request(`https://mcp.example.com/oauth/authorize?error=${error}`),
+        {},
+      );
+      const html = await response.text();
+      expect(html).toContain(expected);
+    }
+  });
+
+  test("authorize redirects to form on invalid token", async () => {
+    const response = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "wrong-token",
+        client_id: "vmhq_test",
+        redirect_uri: "https://client.example.com/callback",
+        code_challenge: "challenge",
+        code_challenge_method: "S256",
+      }),
+      "server-secret",
+      {},
+    );
+
+    expect(response.status).toBe(303);
+    const location = response.headers.get("location");
+    expect(location).toContain("/oauth/authorize");
+    expect(location).toContain("error=1");
+  });
+
+  test("authorize redirects to form on invalid redirect URI", async () => {
+    const response = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "server-secret",
+        client_id: "vmhq_nonexistent",
+        redirect_uri: "http://evil.example/callback",
+        code_challenge: "challenge",
+        code_challenge_method: "S256",
+      }),
+      "server-secret",
+      {},
+    );
+
+    expect(response.status).toBe(303);
+    const location = response.headers.get("location");
+    expect(location).toContain("/oauth/authorize");
+    expect(location).toContain("error=client_not_found");
+  });
+
+  test("authorize redirects to form on invalid PKCE", async () => {
+    const redirectUri = "https://client.example.com/callback";
+    const clientId = await register(redirectUri);
+
+    const response = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "server-secret",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: "",
+        code_challenge_method: "",
+      }),
+      "server-secret",
+      {},
+    );
+
+    expect(response.status).toBe(303);
+    const location = response.headers.get("location");
+    expect(location).toContain("/oauth/authorize");
+    expect(location).toContain("error=invalid_pkce");
+  });
+
   test("performs authorization code flow and makes code single-use", async () => {
     const redirectUri = "https://client.example.com/callback";
     const clientId = await register(redirectUri);

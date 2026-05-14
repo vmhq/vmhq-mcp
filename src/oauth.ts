@@ -246,6 +246,14 @@ export function authorizeForm(req: Request, config: OAuthConfig): Response {
   const state = url.searchParams.get("state") ?? "";
   const error = url.searchParams.get("error");
 
+  const errorMessages: Record<string, string> = {
+    "1": "Invalid token. Please try again.",
+    "client_not_found": "Client not found. The application may need to re-register.",
+    "invalid_redirect_uri": "The redirect URI is not allowed. It must use HTTPS and must not be a localhost address.",
+    "invalid_pkce": "PKCE validation failed. The client must use S256 code challenge method.",
+  };
+  const errorMessage = error ? (errorMessages[error] ?? "An error occurred. Please try again.") : "";
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -270,7 +278,7 @@ export function authorizeForm(req: Request, config: OAuthConfig): Response {
   <div class="card">
     <h1>vmhq-mcp</h1>
     <p>Enter your access token to authorize this connection.</p>
-    ${error ? `<div class="error">Invalid token. Please try again.</div>` : ""}
+    ${errorMessage ? `<div class="error">${escapeHtml(errorMessage)}</div>` : ""}
     <form method="POST" action="${escapeHtml(formAction)}">
       <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
@@ -298,6 +306,7 @@ export async function authorize(req: Request, accessToken: string, config: OAuth
   const state = form.get("state") as string | null;
 
   if (!constantTimeEqual(token, accessToken)) {
+    log("info", "oauth_authorize_invalid_token", { clientId });
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
     if (state) params.set("state", state);
     const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
@@ -307,11 +316,25 @@ export async function authorize(req: Request, accessToken: string, config: OAuth
   const client = clients.get(clientId);
 
   if (!client || !client.redirectUris.includes(redirectUri) || !isValidRedirectUri(redirectUri)) {
-    return Response.json({ error: "invalid_client" }, { status: 400 });
+    if (!client) {
+      log("error", "oauth_authorize_client_not_found", { clientId });
+    } else if (!isValidRedirectUri(redirectUri)) {
+      log("error", "oauth_authorize_invalid_redirect_uri", { clientId, redirectUri });
+    } else {
+      log("error", "oauth_authorize_redirect_uri_not_registered", { clientId, redirectUri, registered: client.redirectUris });
+    }
+    const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: !client ? "client_not_found" : "invalid_redirect_uri" });
+    if (state) params.set("state", state);
+    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
+    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
   }
 
   if (!codeChallenge || codeChallengeMethod !== "S256") {
-    return Response.json({ error: "invalid_request", error_description: "S256 PKCE is required" }, { status: 400 });
+    log("error", "oauth_authorize_invalid_pkce", { clientId });
+    const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "invalid_pkce" });
+    if (state) params.set("state", state);
+    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
+    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
   }
 
   pruneExpiredOAuthState();
@@ -330,7 +353,7 @@ export async function authorize(req: Request, accessToken: string, config: OAuth
     redirect.searchParams.set("state", state);
   }
 
-  log("info", "oauth_authorization_code_issued", { clientId });
+  log("info", "oauth_authorization_code_issued", { clientId, redirectUri: redirect.toString() });
 
   return Response.redirect(redirect.toString(), 303);
 }

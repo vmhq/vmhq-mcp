@@ -66,11 +66,21 @@ export function operationBody(endpoint: ApiEndpoint, inputBody: unknown): unknow
     return { ...endpoint.defaultBody };
   }
 
-  if (!isPlainObject(inputBody)) {
+  let body = inputBody;
+
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      // leave as string
+    }
+  }
+
+  if (!isPlainObject(body)) {
     return inputBody;
   }
 
-  return { ...endpoint.defaultBody, ...inputBody };
+  return { ...endpoint.defaultBody, ...body };
 }
 
 function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, search?: string): unknown {
