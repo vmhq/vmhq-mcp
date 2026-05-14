@@ -87,11 +87,7 @@ const httpServer = Bun.serve({
       if (!checkRateLimit(req, "oauth_register")) {
         return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
       }
-      const token = bearerToken(req);
-      if (!constantTimeEqual(token, config.accessToken) && !isOAuthAccessToken(token)) {
-        return unauthorized(oauthConfig, req);
-      }
-      return secureResponse(await registerClient(req, config.accessToken));
+      return secureResponse(await registerClient(req));
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {

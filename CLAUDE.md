@@ -27,7 +27,7 @@ HTTP client → /mcp → rate limit → Bearer or OAuth token check → McpServe
 The HTTP server also exposes `/health`, OAuth discovery metadata, dynamic client registration, authorization, token exchange, and token revocation endpoints.
 
 - `index.ts` — Bun HTTP server. Routes `/health`, OAuth metadata/endpoints, and `/mcp`. Every `/mcp` request creates a fresh `McpServer` + transport pair. Bearer auth (`MCP_ACCESS_TOKEN`) or a valid OAuth access token is enforced before handing off to MCP. Responses are wrapped with common security headers.
-- `oauth.ts` — OAuth protected-resource and authorization-server metadata, dynamic client registration, authorization-code + PKCE flow, token revocation, access-token hashing, and persisted OAuth state.
+- `oauth.ts` — OAuth protected-resource and authorization-server metadata, public dynamic client registration (`/oauth/register`), authorization-code + PKCE flow, token revocation, access-token hashing, and persisted OAuth state.
 - `rateLimit.ts` — In-memory per-IP rate limits for OAuth endpoints and `/mcp`.
 - `logger.ts` — Structured runtime logging controlled by `MCP_LOG_LEVEL`.
 - `mcp.ts` — Registers `vmhq_status` plus three MCP tools per enabled service: `*_api_reference`, `*_operation`, `*_request`. Tool names are derived from `service.id`.
@@ -61,4 +61,4 @@ The three service MCP tools are registered automatically from enabled `services`
 
 `MCP_ACCESS_TOKEN` is the only hard requirement to start. Service `*_BASE_URL` vars are optional; an unset or empty base URL disables that service. Registry entries with `enabledWhenEnv` (currently Perplexity via OpenRouter through `OPENROUTER_API_KEY`) are disabled unless that env var is present. Service tokens are read lazily at request time from `process.env` — missing tokens produce a normalized `missing_upstream_credentials` tool error instead of crashing.
 
-OAuth client registrations and access token hashes persist to `MCP_OAUTH_STATE_PATH` (default `./data/oauth-state.json`). Authorization codes are in-memory, short-lived, and single-use. OAuth and `/mcp` routes are rate-limited in memory. `MCP_CORS_ORIGIN`, `MCP_UPSTREAM_TIMEOUT_MS`, `MCP_LOG_LEVEL`, `MCP_PUBLIC_URL`, and `MCP_ICON_URL` tune runtime behavior.
+OAuth client registrations and access token hashes persist to `MCP_OAUTH_STATE_PATH` (default `./data/oauth-state.json`). Authorization codes are in-memory, short-lived, and single-use. `/oauth/register` is public by design for Dynamic Client Registration, while registration still validates HTTPS redirect URIs and is rate-limited in memory. OAuth and `/mcp` routes are rate-limited in memory. `MCP_CORS_ORIGIN`, `MCP_UPSTREAM_TIMEOUT_MS`, `MCP_LOG_LEVEL`, `MCP_PUBLIC_URL`, and `MCP_ICON_URL` tune runtime behavior.

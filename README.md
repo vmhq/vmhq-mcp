@@ -136,7 +136,7 @@ En Claude, agrega un conector personalizado con:
 https://mcp.example.com/mcp
 ```
 
-Deja vacios los campos avanzados de OAuth Client ID y OAuth Client Secret. El servidor publica metadata OAuth y soporta Dynamic Client Registration, por lo que Claude puede registrarse y obtener su token automaticamente.
+Deja vacios los campos avanzados de OAuth Client ID y OAuth Client Secret. El servidor publica metadata OAuth y soporta Dynamic Client Registration publico en `/oauth/register`, por lo que Claude puede registrarse y obtener su token automaticamente antes de la autorizacion.
 
 No pegues `MCP_ACCESS_TOKEN` en los campos OAuth de Claude. Ese token sigue existiendo para clientes que soportan bearer token directo, como pruebas con `curl` o configuraciones tipo Codex.
 
