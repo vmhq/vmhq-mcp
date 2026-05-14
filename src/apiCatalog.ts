@@ -24,7 +24,7 @@ export type ApiCatalog = {
   endpoints: ApiEndpoint[];
 };
 
-const checkedAt = "2026-05-13";
+const checkedAt = "2026-05-14";
 
 export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
   home_assistant: {
@@ -290,9 +290,9 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     checkedAt,
     auth: "Bearer token (OPENROUTER_API_KEY) in Authorization header.",
     notes: [
-      "All three operations post to POST /chat/completions. The model is injected automatically for catalog operations based on operationId; advanced callers may still override body.model explicitly.",
-      "Responses include inline citations ([1], [2], ...) in the content and a top-level 'citations' array of source URLs.",
-      "Model selection guide: sonar_pro for fast factual lookup (default); sonar_reasoning_pro for comparisons/synthesis requiring CoT; deep_research for exhaustive multi-source reports.",
+      "Catalog operations post to POST /chat/completions. The model is injected automatically for catalog operations based on operationId; advanced callers may still override body.model explicitly.",
+      "Responses include inline citations ([1], [2], ...) in the content and may include source URLs in message annotations or a top-level citations array, depending on OpenRouter/Perplexity response shape.",
+      "Model selection guide: sonar_pro for fast factual lookup (default); sonar_reasoning_pro for comparisons/synthesis requiring reasoning. Deep Research is intentionally not cataloged because of its high cost.",
       "Always append the mandatory signature at the end of delivered responses: 'Elaborado con Perplexity [Model Name]' (e.g. 'Elaborado con Perplexity Sonar Pro').",
       "Rate limits depend on OpenRouter credit balance. Check https://openrouter.ai/account for usage.",
     ],
@@ -316,16 +316,6 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
         body: '{ "messages": [{ "role": "user", "content": "<query>" }], "max_tokens": 2048 }',
         defaultBody: { model: "perplexity/sonar-reasoning-pro" },
         notes: "Model is injected automatically. Replaces deprecated sonar-reasoning (removed Dec 2025). Append 'Elaborado con Perplexity Sonar Reasoning Pro' to the final response.",
-      },
-      {
-        operationId: "deep_research",
-        method: "POST",
-        path: "/chat/completions",
-        group: "search",
-        summary: "Exhaustive multi-round research. Use for market reports, literature reviews, and investigations requiring many cited sources.",
-        body: '{ "messages": [{ "role": "user", "content": "<query>" }], "max_tokens": 8192 }',
-        defaultBody: { model: "perplexity/sonar-deep-research" },
-        notes: "Model is injected automatically. Slowest and most expensive. Reserve for tasks where coverage and depth are critical. Append 'Elaborado con Perplexity Sonar Deep Research' to the final response.",
       },
     ],
   },

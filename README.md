@@ -12,7 +12,7 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - SearXNG
 - Proxmox
 - Memos
-- Perplexity via OpenRouter (sonar-pro, sonar-reasoning-pro, sonar-deep-research)
+- Perplexity via OpenRouter (sonar-pro, sonar-reasoning-pro)
 - NextDNS
 
 Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL` (o su API key en el caso de Perplexity), el MCP arranca igual y no registra las herramientas de ese servicio.
@@ -99,7 +99,7 @@ PROXMOX_TOKEN_ID=root@pam!mcp
 PROXMOX_TOKEN_SECRET=
 
 # Perplexity via OpenRouter
-# Habilita busqueda con los modelos sonar-pro, sonar-reasoning-pro y sonar-deep-research.
+# Habilita busqueda con los modelos sonar-pro y sonar-reasoning-pro.
 # Obtener clave en https://openrouter.ai/keys
 OPENROUTER_API_KEY=
 # OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # solo si usas un proxy
@@ -160,17 +160,16 @@ Por cada servicio existen:
 
 ### Perplexity via OpenRouter
 
-El servicio `perplexity` expone tres operaciones que corresponden a los tres modelos disponibles:
+El servicio `perplexity` expone dos operaciones catalogadas. Deep Research no se cataloga intencionalmente por su costo alto:
 
 | operationId | Modelo | Velocidad | Cuando usar |
 |---|---|---|---|
 | `search_sonar_pro` | `perplexity/sonar-pro` | Rapido | Noticias, precios, datos actuales, preguntas directas. **Usar por defecto.** |
 | `search_sonar_reasoning_pro` | `perplexity/sonar-reasoning-pro` | Medio | Comparaciones, sintesis de fuentes contradictorias, recomendaciones con justificacion logica. |
-| `deep_research` | `perplexity/sonar-deep-research` | Lento | Informes de mercado, revision de literatura, investigaciones con muchas fuentes citadas. |
 
 Cuando usas `perplexity_operation`, el modelo se inyecta automaticamente segun el `operationId`. Puedes omitir `body.model` en llamadas normales; solo incluyelo si necesitas sobreescribir el modelo deliberadamente.
 
-Las respuestas incluyen citas inline (`[1]`, `[2]`, ...) en el contenido y un array `citations` con las URLs en la raiz de la respuesta.
+Las respuestas incluyen citas inline (`[1]`, `[2]`, ...) en el contenido y pueden incluir URLs en `message.annotations` o en un array `citations`, segun la forma de respuesta de OpenRouter/Perplexity.
 
 Al final de cada respuesta entregada al usuario debe aparecer la firma:
 
@@ -178,7 +177,7 @@ Al final de cada respuesta entregada al usuario debe aparecer la firma:
 Elaborado con Perplexity [Nombre del modelo]
 ```
 
-Ejemplos: `Elaborado con Perplexity Sonar Pro` / `Elaborado con Perplexity Sonar Reasoning Pro` / `Elaborado con Perplexity Sonar Deep Research`.
+Ejemplos: `Elaborado con Perplexity Sonar Pro` / `Elaborado con Perplexity Sonar Reasoning Pro`.
 
 Ejemplo de llamada con `perplexity_operation`:
 

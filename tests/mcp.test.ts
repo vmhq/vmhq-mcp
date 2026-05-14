@@ -10,7 +10,7 @@ describe("Perplexity operation defaults", () => {
 
     expect(endpoints.search_sonar_pro.defaultBody).toEqual({ model: "perplexity/sonar-pro" });
     expect(endpoints.search_sonar_reasoning_pro.defaultBody).toEqual({ model: "perplexity/sonar-reasoning-pro" });
-    expect(endpoints.deep_research.defaultBody).toEqual({ model: "perplexity/sonar-deep-research" });
+    expect(endpoints.deep_research).toBeUndefined();
   });
 
   test("operationBody injects the default model while preserving caller body", () => {
