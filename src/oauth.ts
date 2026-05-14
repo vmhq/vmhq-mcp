@@ -309,17 +309,24 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function authorizeForm(req: Request, _config: OAuthConfig): Response {
-  const url = new URL(req.url);
-  const get = (k: string) => url.searchParams.get(k) ?? "";
+const ERROR_MESSAGES: Record<string, string> = {
+  "1": "Invalid token. Please try again.",
+  client_not_found: "This client is no longer registered. Please remove this MCP server from Claude.ai and re-add it to trigger fresh registration.",
+  invalid_redirect_uri: "The redirect URI is not registered for this client.",
+  invalid_pkce: "PKCE validation failed. The client must use S256 code challenge method.",
+};
 
-  const errorMessages: Record<string, string> = {
-    "1": "Invalid token. Please try again.",
-    client_not_found: "Client not found. The application may need to re-register.",
-    invalid_redirect_uri: "The redirect URI is not registered for this client.",
-    invalid_pkce: "PKCE validation failed. The client must use S256 code challenge method.",
-  };
-  const errorMsg = get("error") ? (errorMessages[get("error")] ?? "An error occurred. Please try again.") : "";
+function renderAuthorizeForm(p: {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  state: string;
+  scope: string;
+  resource: string;
+  error?: string;
+}): Response {
+  const errorMsg = p.error ? (ERROR_MESSAGES[p.error] ?? "An error occurred. Please try again.") : "";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -329,7 +336,7 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
   <title>Authorize — vmhq-mcp</title>
   <style>
     body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-    .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:2rem;width:100%;max-width:380px}
+    .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:2rem;width:100%;max-width:420px}
     h1{margin:0 0 .5rem;font-size:1.25rem}
     p{margin:0 0 1.5rem;color:#888;font-size:.9rem}
     label{display:block;margin-bottom:.4rem;font-size:.85rem;color:#aaa}
@@ -337,7 +344,7 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
     input[type=password]:focus{border-color:#555}
     button{margin-top:1rem;width:100%;padding:.7rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
     button:hover{background:#2563eb}
-    .error{color:#f87171;font-size:.85rem;margin-bottom:1rem}
+    .error{background:#3f1212;border:1px solid #7f2020;border-radius:8px;color:#fca5a5;font-size:.9rem;padding:.75rem 1rem;margin-bottom:1.25rem;line-height:1.4}
   </style>
 </head>
 <body>
@@ -346,13 +353,13 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
     <p>Enter your access token to authorize this connection.</p>
     ${errorMsg ? `<div class="error">${escapeHtml(errorMsg)}</div>` : ""}
     <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="client_id" value="${escapeHtml(get("client_id"))}">
-      <input type="hidden" name="redirect_uri" value="${escapeHtml(get("redirect_uri"))}">
-      <input type="hidden" name="code_challenge" value="${escapeHtml(get("code_challenge"))}">
-      <input type="hidden" name="code_challenge_method" value="${escapeHtml(get("code_challenge_method"))}">
-      <input type="hidden" name="state" value="${escapeHtml(get("state"))}">
-      <input type="hidden" name="scope" value="${escapeHtml(get("scope"))}">
-      <input type="hidden" name="resource" value="${escapeHtml(get("resource"))}">
+      <input type="hidden" name="client_id" value="${escapeHtml(p.clientId)}">
+      <input type="hidden" name="redirect_uri" value="${escapeHtml(p.redirectUri)}">
+      <input type="hidden" name="code_challenge" value="${escapeHtml(p.codeChallenge)}">
+      <input type="hidden" name="code_challenge_method" value="${escapeHtml(p.codeChallengeMethod)}">
+      <input type="hidden" name="state" value="${escapeHtml(p.state)}">
+      <input type="hidden" name="scope" value="${escapeHtml(p.scope)}">
+      <input type="hidden" name="resource" value="${escapeHtml(p.resource)}">
       <label for="token">Access Token</label>
       <input type="password" id="token" name="token" autofocus placeholder="vmhq_…" autocomplete="current-password">
       <button type="submit">Authorize</button>
@@ -362,7 +369,23 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
 </html>`;
 
   return new Response(html, {
+    status: errorMsg ? 400 : 200,
     headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
+  });
+}
+
+export function authorizeForm(req: Request, _config: OAuthConfig): Response {
+  const url = new URL(req.url);
+  const get = (k: string) => url.searchParams.get(k) ?? "";
+  return renderAuthorizeForm({
+    clientId: get("client_id"),
+    redirectUri: get("redirect_uri"),
+    codeChallenge: get("code_challenge"),
+    codeChallengeMethod: get("code_challenge_method"),
+    state: get("state"),
+    scope: get("scope"),
+    resource: get("resource"),
+    error: get("error") || undefined,
   });
 }
 
@@ -378,36 +401,7 @@ async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
   return Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 }
 
-function authorizeErrorRedirect(
-  config: OAuthConfig,
-  req: Request,
-  params: {
-    clientId: string;
-    redirectUri: string;
-    codeChallenge: string;
-    codeChallengeMethod: string;
-    state?: string;
-    scope?: string;
-    resource?: string;
-    error: string;
-  },
-): Response {
-  const sp = new URLSearchParams({
-    client_id: params.clientId,
-    redirect_uri: params.redirectUri,
-    code_challenge: params.codeChallenge,
-    code_challenge_method: params.codeChallengeMethod,
-    error: params.error,
-  });
-  if (params.state) sp.set("state", params.state);
-  if (params.scope) sp.set("scope", params.scope);
-  if (params.resource) sp.set("resource", params.resource);
-
-  const origin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
-  return Response.redirect(new URL(`/oauth/authorize?${sp}`, origin).toString(), 303);
-}
-
-export async function authorize(req: Request, serverToken: string, config: OAuthConfig): Promise<Response> {
+export async function authorize(req: Request, serverToken: string, _config: OAuthConfig): Promise<Response> {
   const form = await parseFormOrJson(req);
   const {
     token = "",
@@ -415,35 +409,35 @@ export async function authorize(req: Request, serverToken: string, config: OAuth
     redirect_uri: redirectUri = "",
     code_challenge: codeChallenge = "",
     code_challenge_method: codeChallengeMethod = "",
-    state,
+    state = "",
     scope = "mcp",
     resource = "",
   } = form;
 
-  const errCtx = { clientId, redirectUri, codeChallenge, codeChallengeMethod, state, scope, resource };
+  const formCtx = { clientId, redirectUri, codeChallenge, codeChallengeMethod, state, scope, resource };
 
   // 1. Validate the server secret the user typed
   if (!constantTimeEqual(token, serverToken)) {
     log("info", "oauth_authorize_invalid_token", { clientId });
-    return authorizeErrorRedirect(config, req, { ...errCtx, error: "1" });
+    return renderAuthorizeForm({ ...formCtx, error: "1" });
   }
 
   // 2. Client must exist and redirect URI must be registered (port-agnostic for loopback)
   const client = clients.get(clientId);
   if (!client) {
     log("error", "oauth_authorize_client_not_found", { clientId });
-    return authorizeErrorRedirect(config, req, { ...errCtx, error: "client_not_found" });
+    return renderAuthorizeForm({ ...formCtx, error: "client_not_found" });
   }
   const matchedUri = client.redirectUris.find((r) => redirectUriMatches(redirectUri, r));
   if (!matchedUri || !isRegistrableRedirectUri(redirectUri)) {
     log("error", "oauth_authorize_invalid_redirect_uri", { clientId, redirectUri });
-    return authorizeErrorRedirect(config, req, { ...errCtx, error: "invalid_redirect_uri" });
+    return renderAuthorizeForm({ ...formCtx, error: "invalid_redirect_uri" });
   }
 
   // 3. PKCE: must be S256
   if (!codeChallenge || codeChallengeMethod !== "S256") {
     log("error", "oauth_authorize_invalid_pkce", { clientId });
-    return authorizeErrorRedirect(config, req, { ...errCtx, error: "invalid_pkce" });
+    return renderAuthorizeForm({ ...formCtx, error: "invalid_pkce" });
   }
 
   // 4. Issue authorization code
