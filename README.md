@@ -55,12 +55,17 @@ services:
         required: false
     ports:
       - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
+    environment:
+      MCP_OAUTH_STATE_PATH: ${MCP_OAUTH_STATE_PATH:-/app/data/oauth-state.json}
     volumes:
-      - ./data:/app/data
+      - vmhq-mcp-data:/app/data
     restart: unless-stopped
+
+volumes:
+  vmhq-mcp-data:
 ```
 
-El volumen `./data` persiste el estado OAuth (clientes registrados y tokens) entre reinicios del contenedor.
+El volumen Docker `vmhq-mcp-data` persiste el estado OAuth (clientes registrados y hashes de tokens) entre reinicios del contenedor.
 
 ## .env de ejemplo
 
@@ -111,7 +116,7 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # MCP_UPSTREAM_TIMEOUT_MS=30000
 # Structured log level: silent, error, info, debug. Defaults to info.
 # MCP_LOG_LEVEL=info
-# Path for persisting OAuth state inside the container (matches the ./data:/app/data volume).
+# Path for persisting OAuth state inside the container (matches the vmhq-mcp-data:/app/data Docker volume).
 # Stored OAuth access tokens are persisted as SHA-256 hashes.
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
 ```
