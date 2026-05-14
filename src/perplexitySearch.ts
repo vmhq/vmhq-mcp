@@ -22,13 +22,55 @@ export type PerplexitySearchResult = {
 };
 
 export type PerplexitySearchError = {
-  error: { type: string; service: "perplexity"; message: string; retryable: boolean };
+  error: { type: string; service: "perplexity"; message: string; retryable: boolean; status?: number; code?: string; metadata?: unknown };
 };
 
 const DEFAULT_MAX_TOKENS: Record<PerplexityModelId, number> = {
   "perplexity/sonar-pro": 1024,
   "perplexity/sonar-reasoning-pro": 2048,
 };
+
+const MIN_MAX_TOKENS: Record<PerplexityModelId, number> = {
+  "perplexity/sonar-pro": 64,
+  "perplexity/sonar-reasoning-pro": 512,
+};
+
+function effectiveMaxTokens(model: PerplexityModelId, requested?: number): number {
+  const fallback = DEFAULT_MAX_TOKENS[model];
+
+  if (!Number.isFinite(requested) || requested === undefined) {
+    return fallback;
+  }
+
+  return Math.max(Math.floor(requested), MIN_MAX_TOKENS[model]);
+}
+
+function parseJson(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function upstreamErrorMessage(data: unknown, text: string): { message: string; code?: string; metadata?: unknown } {
+  if (typeof data === "object" && data !== null && "error" in data) {
+    const error = (data as Record<string, unknown>).error;
+
+    if (typeof error === "object" && error !== null) {
+      const err = error as Record<string, unknown>;
+      const message = typeof err.message === "string" ? err.message : JSON.stringify(error);
+      const code = typeof err.code === "string" ? err.code : typeof err.code === "number" ? String(err.code) : undefined;
+      return { message, code, metadata: err.metadata };
+    }
+
+    if (typeof error === "string") {
+      return { message: error };
+    }
+  }
+
+  return { message: text || "OpenRouter returned an empty error response." };
+}
 
 export async function searchPerplexity(
   apiKey: string,
@@ -39,6 +81,17 @@ export async function searchPerplexity(
 ): Promise<PerplexitySearchResult | PerplexitySearchError> {
   const { system, maxTokens, timeoutMs = 60_000 } = options;
 
+  if (!apiKey.trim()) {
+    return {
+      error: {
+        type: "missing_upstream_credentials",
+        service: "perplexity",
+        message: "Missing required credential environment variable: OPENROUTER_API_KEY",
+        retryable: false,
+      },
+    };
+  }
+
   const messages = [
     ...(system ? [{ role: "system", content: system }] : []),
     { role: "user", content: query },
@@ -47,7 +100,7 @@ export async function searchPerplexity(
   const requestBody = JSON.stringify({
     model,
     messages,
-    max_tokens: maxTokens ?? DEFAULT_MAX_TOKENS[model],
+    max_tokens: effectiveMaxTokens(model, maxTokens),
   });
 
   const url = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
@@ -64,6 +117,8 @@ export async function searchPerplexity(
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
+        "HTTP-Referer": process.env["MCP_PUBLIC_URL"] ?? "https://mcp.vmhq.cl",
+        "X-Title": "VMHQ MCP",
       },
       body: requestBody,
       signal: controller.signal,
@@ -81,31 +136,43 @@ export async function searchPerplexity(
       durationMs,
     });
 
-    let data: unknown;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return { error: { type: "parse_error", service: "perplexity", message: "Failed to parse OpenRouter response.", retryable: false } };
-    }
+    const data = parseJson(text);
 
     if (!response.ok) {
-      const msg = typeof data === "object" && data !== null && "error" in data
-        ? JSON.stringify((data as Record<string, unknown>).error)
-        : text;
+      const upstream = upstreamErrorMessage(data, text);
       return {
         error: {
           type: "upstream_error",
           service: "perplexity",
-          message: `OpenRouter responded with HTTP ${response.status}: ${msg}`,
-          retryable: response.status >= 500,
+          message: `OpenRouter responded with HTTP ${response.status}: ${upstream.message}`,
+          retryable: response.status >= 500 || response.status === 429,
+          status: response.status,
+          code: upstream.code,
+          metadata: upstream.metadata,
         },
       };
+    }
+
+    if (data === undefined) {
+      return { error: { type: "parse_error", service: "perplexity", message: "Failed to parse OpenRouter response.", retryable: false, status: response.status } };
     }
 
     const d = data as Record<string, unknown>;
     const choices = Array.isArray(d.choices) ? (d.choices as Array<Record<string, unknown>>) : [];
     const message = choices[0]?.message as Record<string, unknown> | undefined;
     const content = typeof message?.content === "string" ? message.content : "";
+
+    if (!content.trim()) {
+      return {
+        error: {
+          type: "empty_response",
+          service: "perplexity",
+          message: "OpenRouter returned a successful response without assistant content. Increase maxTokens or retry the request.",
+          retryable: true,
+          status: response.status,
+        },
+      };
+    }
 
     const topLevelCitations = Array.isArray(d.citations) ? (d.citations as string[]) : [];
     const annotations = Array.isArray(message?.annotations) ? (message.annotations as Array<Record<string, unknown>>) : [];

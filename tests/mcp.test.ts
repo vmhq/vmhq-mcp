@@ -81,21 +81,106 @@ describe("PERPLEXITY_MODELS", () => {
 });
 
 describe("searchPerplexity", () => {
-  test("returns missing credentials error when apiKey is empty", async () => {
+  test("returns missing credentials error when apiKey is empty without calling fetch", async () => {
+    const originalFetch = global.fetch;
+    let called = false;
+    global.fetch = Object.assign(
+      async () => {
+        called = true;
+        return new Response("unexpected");
+      },
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
     const result = await searchPerplexity("", "https://openrouter.ai/api/v1", "perplexity/sonar-pro", "test query");
     expect(result).toHaveProperty("error");
+    expect((result as { error: { type: string } }).error.type).toBe("missing_upstream_credentials");
+    expect(called).toBe(false);
+
+    global.fetch = originalFetch;
+  });
+
+  test("clamps reasoning model max tokens to a safe minimum", async () => {
+    const originalFetch = global.fetch;
+    let body: unknown;
+    global.fetch = Object.assign(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            model: "perplexity/sonar-reasoning-pro",
+            choices: [{ message: { role: "assistant", content: "Reasoned answer." }, finish_reason: "stop" }],
+            usage: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const result = await searchPerplexity("valid-key", "https://openrouter.ai/api/v1", "perplexity/sonar-reasoning-pro", "test", { maxTokens: 1 });
+    expect(result).not.toHaveProperty("error");
+    expect((body as { max_tokens: number }).max_tokens).toBe(512);
+
+    global.fetch = originalFetch;
   });
 
   test("returns upstream error on non-ok response", async () => {
     const originalFetch = global.fetch;
     global.fetch = Object.assign(
-      async () => new Response(JSON.stringify({ error: { message: "Unauthorized" } }), { status: 401, headers: { "Content-Type": "application/json" } }),
+      async () => new Response(JSON.stringify({ error: { message: "Unauthorized", code: 401 } }), { status: 401, headers: { "Content-Type": "application/json" } }),
       { preconnect: () => {} },
     ) as typeof fetch;
 
     const result = await searchPerplexity("bad-key", "https://openrouter.ai/api/v1", "perplexity/sonar-pro", "test");
     expect(result).toHaveProperty("error");
-    expect((result as { error: { type: string } }).error.type).toBe("upstream_error");
+    const err = (result as { error: { type: string; status?: number; code?: string } }).error;
+    expect(err.type).toBe("upstream_error");
+    expect(err.status).toBe(401);
+    expect(err.code).toBe("401");
+
+    global.fetch = originalFetch;
+  });
+
+  test("normalizes non-json upstream errors", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = Object.assign(
+      async () => new Response("Internal Server Error", { status: 500, headers: { "Content-Type": "text/plain" } }),
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const result = await searchPerplexity("valid-key", "https://openrouter.ai/api/v1", "perplexity/sonar-pro", "test");
+    expect(result).toHaveProperty("error");
+    const err = (result as { error: { type: string; message: string; retryable: boolean; status?: number } }).error;
+    expect(err.type).toBe("upstream_error");
+    expect(err.message).toContain("HTTP 500");
+    expect(err.message).toContain("Internal Server Error");
+    expect(err.retryable).toBe(true);
+    expect(err.status).toBe(500);
+
+    global.fetch = originalFetch;
+  });
+
+  test("returns empty_response for successful responses without assistant content", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            model: "perplexity/sonar-pro",
+            choices: [{ message: { role: "assistant", content: "" }, finish_reason: "length" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      { preconnect: () => {} },
+    ) as typeof fetch;
+
+    const result = await searchPerplexity("valid-key", "https://openrouter.ai/api/v1", "perplexity/sonar-pro", "test");
+    expect(result).toHaveProperty("error");
+    const err = (result as { error: { type: string; retryable: boolean } }).error;
+    expect(err.type).toBe("empty_response");
+    expect(err.retryable).toBe(true);
 
     global.fetch = originalFetch;
   });
