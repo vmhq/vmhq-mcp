@@ -77,8 +77,12 @@ function buildUrl(service: ServiceDefinition, input: ServiceRequestInput): URL {
   }
 
   const baseUrl = new URL(service.baseUrl);
-  const path = input.path.startsWith("/") ? input.path : `/${input.path}`;
-  const url = new URL(path, baseUrl);
+  // Ensure base ends with "/" so relative paths append to (not replace) the base path.
+  // new URL("/chat/completions", "https://host/api/v1") drops /api/v1; stripping the
+  // leading slash and using a trailing-slash base preserves it.
+  const base = baseUrl.href.endsWith("/") ? baseUrl.href : `${baseUrl.href}/`;
+  const relativePath = input.path.replace(/^\/+/, "");
+  const url = new URL(relativePath, base);
 
   if (url.origin !== baseUrl.origin) {
     throw new Error("Resolved URL escaped the configured service origin.");
