@@ -93,6 +93,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
     {},
+    { title: "VMHQ Status" },
     async () => {
       const enabled = services.map((service) => service.id);
       const disabled = (Object.keys(API_CATALOGS) as ServiceId[]).filter((serviceId) => !enabled.includes(serviceId));
@@ -118,6 +119,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
       `${service.id}_api_reference`,
       `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
       apiReferenceSchema,
+      { title: `${service.title} API Reference` },
       async ({ group, search }: { group?: string; search?: string }) => {
         return {
           content: [
@@ -134,6 +136,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
       `${service.id}_operation`,
       `Call a documented ${service.title} operation by operationId. Use ${service.id}_api_reference first to discover valid operations and required path parameters.`,
       apiOperationSchema,
+      { title: `${service.title} Operation` },
       async (input: {
         operationId: string;
         pathParams?: Record<string, string | number>;
@@ -191,6 +194,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
       `${service.id}_request`,
       `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}`,
       serviceRequestSchema,
+      { title: `${service.title} Request` },
       async (input: ServiceRequestInput) => {
         const result = await callService(service, input);
 
