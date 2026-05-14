@@ -60,12 +60,14 @@ describe("OAuth", () => {
     expect(response.status).toBe(400);
   });
 
-  test("authorize form includes security headers", () => {
+  test("authorize form includes security headers and absolute form action", async () => {
     const response = oauth.authorizeForm(new Request("https://mcp.example.com/oauth/authorize"));
+    const html = await response.text();
 
     expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
     expect(response.headers.get("x-frame-options")).toBe("DENY");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(html).toContain('action="https://mcp.example.com/oauth/authorize"');
   });
 
   test("performs authorization code flow and makes code single-use", async () => {
@@ -86,7 +88,7 @@ describe("OAuth", () => {
       "server-secret",
     );
 
-    expect(authResponse.status).toBe(302);
+    expect(authResponse.status).toBe(303);
     const location = authResponse.headers.get("location");
     expect(location).toBeTruthy();
     const redirect = new URL(location!);

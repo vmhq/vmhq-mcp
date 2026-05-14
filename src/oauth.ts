@@ -237,6 +237,7 @@ const SECURITY_HEADERS = {
 
 export function authorizeForm(req: Request): Response {
   const url = new URL(req.url);
+  const formAction = new URL("/oauth/authorize", url.origin).toString();
   const clientId = url.searchParams.get("client_id") ?? "";
   const redirectUri = url.searchParams.get("redirect_uri") ?? "";
   const codeChallenge = url.searchParams.get("code_challenge") ?? "";
@@ -269,7 +270,7 @@ export function authorizeForm(req: Request): Response {
     <h1>vmhq-mcp</h1>
     <p>Enter your access token to authorize this connection.</p>
     ${error ? `<div class="error">Invalid token. Please try again.</div>` : ""}
-    <form method="POST" action="/oauth/authorize">
+    <form method="POST" action="${escapeHtml(formAction)}">
       <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
       <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
       <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}">
@@ -298,7 +299,7 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
   if (!constantTimeEqual(token, accessToken)) {
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
     if (state) params.set("state", state);
-    return Response.redirect(`/oauth/authorize?${params}`, 303);
+    return Response.redirect(new URL(`/oauth/authorize?${params}`, req.url).toString(), 303);
   }
 
   const client = clients.get(clientId);
@@ -329,7 +330,7 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
 
   log("info", "oauth_authorization_code_issued", { clientId });
 
-  return Response.redirect(redirect, 302);
+  return Response.redirect(redirect.toString(), 303);
 }
 
 function s256(verifier: string): string {
