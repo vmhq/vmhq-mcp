@@ -184,7 +184,7 @@ describe("authorization form", () => {
   test("renders error messages from query param", async () => {
     const cases = [
       { error: "1", expected: "Invalid token" },
-      { error: "client_not_found", expected: "Client not found" },
+      { error: "client_not_found", expected: "no longer registered" },
       { error: "invalid_redirect_uri", expected: "redirect URI is not registered" },
       { error: "invalid_pkce", expected: "PKCE validation failed" },
     ];
@@ -213,7 +213,7 @@ describe("authorization form", () => {
 // ─── POST /oauth/authorize ────────────────────────────────────────────────────
 
 describe("POST /oauth/authorize", () => {
-  test("redirects to form with error=1 on wrong token", async () => {
+  test("renders form with error=1 on wrong token", async () => {
     const res = await oauth.authorize(
       formRequest("https://mcp.example.com/oauth/authorize", {
         token: "wrong",
@@ -225,11 +225,11 @@ describe("POST /oauth/authorize", () => {
       "server-secret",
       {},
     );
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("error=1");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("Invalid token");
   });
 
-  test("redirects to form with error=client_not_found when client is unknown", async () => {
+  test("renders form with client_not_found error when client is unknown", async () => {
     const res = await oauth.authorize(
       formRequest("https://mcp.example.com/oauth/authorize", {
         token: "server-secret",
@@ -241,11 +241,11 @@ describe("POST /oauth/authorize", () => {
       "server-secret",
       {},
     );
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("error=client_not_found");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("no longer registered");
   });
 
-  test("redirects to form with error=invalid_pkce when PKCE is absent or not S256", async () => {
+  test("renders form with invalid_pkce error when PKCE is absent or not S256", async () => {
     const redirectUri = "https://client.example.com/callback";
     const clientId = await register(redirectUri);
     const res = await oauth.authorize(
@@ -259,8 +259,8 @@ describe("POST /oauth/authorize", () => {
       "server-secret",
       {},
     );
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("error=invalid_pkce");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("PKCE validation failed");
   });
 });
 
@@ -400,8 +400,8 @@ describe("RFC 8252 loopback port-agnostic redirect URI matching", () => {
       "server-secret",
       {},
     );
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toContain("error=invalid_redirect_uri");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("redirect URI is not registered");
   });
 });
 
