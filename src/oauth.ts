@@ -179,11 +179,25 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
   });
 }
 
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 function isValidRedirectUri(uri: string): boolean {
   try {
     const parsed = new URL(uri);
+
+    // RFC 8252 §8.3: loopback redirect URIs use http with 127.0.0.1/localhost/[::1]
+    if (LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
+      return parsed.protocol === "http:" && !parsed.username && !parsed.password && !parsed.hash;
+    }
+
+    // Private-use URI schemes for native apps (RFC 8252 §7.1)
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return !parsed.username && !parsed.password && !parsed.hash;
+    }
+
+    // Standard HTTPS redirect URIs
     if (parsed.protocol !== "https:") return false;
-    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "0.0.0.0") return false;
+    if (parsed.hostname === "0.0.0.0") return false;
     if (parsed.username || parsed.password) return false;
     if (parsed.hostname.includes("*")) return false;
     if (parsed.hash) return false;
@@ -362,13 +376,25 @@ function s256(verifier: string): string {
   return sha256(verifier);
 }
 
-export async function exchangeToken(req: Request): Promise<Response> {
+async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(body).map(([k, v]) => [k, String(v ?? "")])
+    );
+  }
   const form = await req.formData();
-  const grantType = String(form.get("grant_type") ?? "");
-  const code = String(form.get("code") ?? "");
-  const redirectUri = String(form.get("redirect_uri") ?? "");
-  const clientId = String(form.get("client_id") ?? "");
-  const codeVerifier = String(form.get("code_verifier") ?? "");
+  return Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
+}
+
+export async function exchangeToken(req: Request): Promise<Response> {
+  const params = await parseFormOrJson(req);
+  const grantType = params.grant_type ?? "";
+  const code = params.code ?? "";
+  const redirectUri = params.redirect_uri ?? "";
+  const clientId = params.client_id ?? "";
+  const codeVerifier = params.code_verifier ?? "";
   const authorizationCode = codes.get(code);
 
   if (grantType !== "authorization_code" || !authorizationCode) {
@@ -405,8 +431,8 @@ export async function exchangeToken(req: Request): Promise<Response> {
 }
 
 export async function revokeToken(req: Request): Promise<Response> {
-  const form = await req.formData();
-  const token = String(form.get("token") ?? "");
+  const params = await parseFormOrJson(req);
+  const token = params.token ?? "";
 
   if (!token) {
     return Response.json({ error: "invalid_request" }, { status: 400 });
