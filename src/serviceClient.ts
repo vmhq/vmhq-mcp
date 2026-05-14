@@ -106,6 +106,38 @@ function usefulResponseHeaders(headers: Headers): Record<string, string> {
   return picked;
 }
 
+function filterFields(data: unknown, fields: string[]): unknown {
+  if (Array.isArray(data)) {
+    return data.map((item) => filterFields(item, fields));
+  }
+
+  if (data !== null && typeof data === "object") {
+    const filtered: Record<string, unknown> = {};
+    for (const field of fields) {
+      if (field in data) {
+        filtered[field] = (data as Record<string, unknown>)[field];
+      }
+    }
+    return filtered;
+  }
+
+  return data;
+}
+
+function filterByDomain(data: unknown, domain: string): unknown {
+  if (!Array.isArray(data)) {
+    return data;
+  }
+
+  const prefix = `${domain}.`;
+  return data.filter((item) => {
+    if (item !== null && typeof item === "object" && "entity_id" in item) {
+      return String((item as Record<string, unknown>).entity_id).startsWith(prefix);
+    }
+    return false;
+  });
+}
+
 async function parseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
   const text = await response.text();
@@ -146,6 +178,16 @@ export async function callService(service: ServiceDefinition, input: ServiceRequ
     body,
   });
 
+  let responseBody = await parseBody(response);
+
+  if (input.fields && Array.isArray(input.fields) && input.fields.length > 0) {
+    responseBody = filterFields(responseBody, input.fields);
+  }
+
+  if (input.domain) {
+    responseBody = filterByDomain(responseBody, input.domain);
+  }
+
   return {
     service: service.id,
     request: {
@@ -157,7 +199,7 @@ export async function callService(service: ServiceDefinition, input: ServiceRequ
       status: response.status,
       statusText: response.statusText,
       headers: usefulResponseHeaders(response.headers),
-      body: await parseBody(response),
+      body: responseBody,
     },
   };
 }

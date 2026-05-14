@@ -30,4 +30,7 @@ export type ServiceRequestInput = {
   query?: Record<string, string | number | boolean | Array<string | number | boolean>>;
   body?: unknown;
   headers?: Record<string, string>;
+  fields?: string[];
+  maxLength?: number;
+  domain?: string;
 };

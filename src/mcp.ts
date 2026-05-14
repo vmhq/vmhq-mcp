@@ -17,6 +17,9 @@ const serviceRequestSchema = {
   query: z.record(queryValueSchema).optional().describe("Optional query string parameters."),
   body: z.unknown().optional().describe("Optional JSON request body for non-GET methods."),
   headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
+  fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects. Useful for large arrays like /api/states to reduce token usage."),
+  maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
+  domain: z.string().optional().describe("Optional Home Assistant domain filter. When the response is an array of objects with entity_id, only items matching domain.* are kept. Example: light, switch, sensor."),
 };
 
 const apiReferenceSchema = {
@@ -30,10 +33,24 @@ const apiOperationSchema = {
   query: z.record(queryValueSchema).optional().describe("Optional query string parameters."),
   body: z.unknown().optional().describe("Optional JSON request body."),
   headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
+  fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects."),
+  maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
+  domain: z.string().optional().describe("Optional Home Assistant domain filter. When the response is an array of objects with entity_id, only items matching domain.* are kept."),
 };
 
-function responseText(payload: unknown): string {
-  return JSON.stringify(payload, null, 2);
+function responseText(payload: unknown, maxLength?: number): string {
+  const compact = JSON.stringify(payload);
+  const threshold = maxLength ?? 8000;
+
+  if (compact.length <= threshold) {
+    return JSON.stringify(payload, null, 2);
+  }
+
+  if (maxLength && compact.length > maxLength) {
+    return compact.slice(0, maxLength) + `\n... [truncated: ${compact.length - maxLength} more characters]`;
+  }
+
+  return compact;
 }
 
 function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, search?: string): unknown {
@@ -123,6 +140,9 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
         query?: ServiceRequestInput["query"];
         body?: unknown;
         headers?: Record<string, string>;
+        fields?: ServiceRequestInput["fields"];
+        maxLength?: ServiceRequestInput["maxLength"];
+        domain?: ServiceRequestInput["domain"];
       }) => {
         const endpoint = endpointFor(service.id, input.operationId);
 
@@ -148,6 +168,9 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
           query: input.query,
           body: input.body,
           headers: input.headers,
+          fields: input.fields,
+          maxLength: input.maxLength,
+          domain: input.domain,
         });
 
         return {
@@ -157,7 +180,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
               text: responseText({
                 operation: endpoint,
                 result,
-              }),
+              }, input.maxLength),
             },
           ],
         };
@@ -175,7 +198,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
           content: [
             {
               type: "text",
-              text: responseText(result),
+              text: responseText(result, input.maxLength),
             },
           ],
         };

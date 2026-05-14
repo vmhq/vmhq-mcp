@@ -36,6 +36,8 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       "Home Assistant exposes dynamic domain services at /api/services/{domain}/{service}; discover available services first with home_assistant_operation:get_services.",
       "POST /api/states/{entity_id} only changes Home Assistant state representation. It does not control the physical device; use call_service for device actions.",
       "Some services require or reject the return_response query flag depending on whether the service returns data.",
+      "get_states returns every entity state and can be very large. Use fields, maxLength, or domain parameters to limit response size.",
+      "get_history returns time-series data that grows quickly. Always use filter_entity_id, end_time, minimal_response, no_attributes and significant_changes_only.",
     ],
     endpoints: [
       { operationId: "ping", method: "GET", path: "/api/", group: "system", summary: "Check that the API is reachable." },
@@ -64,10 +66,11 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     docsUrl: "https://miniflux.app/docs/api.html",
     checkedAt,
     auth: "X-Auth-Token header by default; bearer mode is configurable with MINIFLUX_AUTH_MODE=bearer.",
-    pagination: "Entry/feed list endpoints use limit/offset and filters documented by Miniflux.",
+    pagination: "Entry list endpoints use limit/offset. Feed lists do not paginate.",
     notes: [
       "Miniflux API paths are rooted at /v1 for core API endpoints.",
       "The generic miniflux_request tool remains available for endpoints not covered by this operation catalog.",
+      "list_feeds returns every feed without pagination and can grow large; use fields and maxLength to limit response size.",
     ],
     endpoints: [
       { operationId: "get_me", method: "GET", path: "/v1/me", group: "users", summary: "Return authenticated user." },
@@ -188,6 +191,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       "Proxmox VE formally defines the whole API with JSON Schema; the API viewer and pvesh are generated from the same schema.",
       "This catalog covers the main REST tree. Use proxmox_request for any schema endpoint not explicitly listed here.",
       "API tokens do not require CSRF tokens for write requests.",
+      "cluster_resources returns all resources across the cluster and can be very large; use the type query filter. storage_content can list thousands of files; use content and vmid filters.",
     ],
     endpoints: [
       { operationId: "version", method: "GET", path: "/api2/json/version", group: "system", summary: "Get Proxmox VE version." },
@@ -242,6 +246,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     notes: [
       "The latest Memos reference tracks the main branch schema and groups endpoints by service.",
       "Core API paths are rooted at /api/v1.",
+      "Memo sub-resource endpoints (comments, attachments, relations, reactions) do not support pagination and can grow large; use fields and maxLength to limit response size.",
     ],
     endpoints: [
       { operationId: "ai_transcribe", method: "POST", path: "/api/v1/ai:transcribe", group: "ai", summary: "Transcribe audio using the instance AI provider.", body: "{ audio: object }" },
