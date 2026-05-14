@@ -55,8 +55,6 @@ services:
         required: false
     ports:
       - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
-    environment:
-      MCP_OAUTH_STATE_PATH: ${MCP_OAUTH_STATE_PATH:-/app/data/oauth-state.json}
     volumes:
       - vmhq-mcp-data:/app/data
     restart: unless-stopped
