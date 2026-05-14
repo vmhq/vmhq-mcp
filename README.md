@@ -13,6 +13,7 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - Proxmox
 - Memos
 - Perplexity via OpenRouter (sonar-pro, sonar-reasoning-pro, sonar-deep-research)
+- NextDNS
 
 Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL` (o su API key en el caso de Perplexity), el MCP arranca igual y no registra las herramientas de ese servicio.
 
@@ -79,12 +80,15 @@ KARAKEEP_BASE_URL=https://karakeep.example.com
 SEARXNG_BASE_URL=https://searxng.example.com
 PROXMOX_BASE_URL=https://proxmox.example.com
 MEMOS_BASE_URL=https://memos.example.com
+NEXTDNS_BASE_URL=https://api.nextdns.io
 
 # Service credentials
 HOME_ASSISTANT_TOKEN=
 MINIFLUX_TOKEN=
 KARAKEEP_TOKEN=
 MEMOS_TOKEN=
+NEXTDNS_API_KEY=
+NEXTDNS_PROFILE_ID=39f768
 
 # Proxmox API token
 # Token ID format: USER@REALM!TOKENID
@@ -144,6 +148,7 @@ Por cada servicio existen:
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `perplexity_api_reference`, `perplexity_operation`, `perplexity_request`
+- `nextdns_api_reference`, `nextdns_operation`, `nextdns_request`
 
 ### Perplexity via OpenRouter
 
@@ -232,3 +237,4 @@ El catalogo local se construyo desde la documentacion oficial revisada el 2026-0
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
 - OpenRouter API: https://openrouter.ai/docs
+- NextDNS API: https://nextdns.io/api

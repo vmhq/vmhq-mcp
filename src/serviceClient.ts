@@ -4,6 +4,7 @@ const BLOCKED_REQUEST_HEADERS = new Set([
   "authorization",
   "cookie",
   "host",
+  "x-api-key",
   "x-auth-token",
   "content-length",
   "transfer-encoding",

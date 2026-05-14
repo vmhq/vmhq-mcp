@@ -46,8 +46,9 @@ The three MCP tools are registered automatically from `services` in `mcp.ts` —
 | `bearer` | `Authorization: Bearer <token>` |
 | `header` | Custom header name (e.g., `X-Auth-Token`) |
 | `prefixed` | `Authorization: <prefix><token>` (Proxmox PVEAPIToken= style) |
+| `static` | Fixed header name/value pair built at startup |
 | `none` | No auth header added |
 
 ## Environment variables
 
-`MCP_ACCESS_TOKEN` is the only hard requirement to start. All `*_BASE_URL` vars are also required. Service tokens are read lazily at request time from `process.env` — missing tokens produce empty-string auth (no crash).
+`MCP_ACCESS_TOKEN` is the only hard requirement to start. Service `*_BASE_URL` vars are optional; an unset or empty base URL disables that service. Service tokens are read lazily at request time from `process.env` — missing tokens produce empty-string auth (no crash).

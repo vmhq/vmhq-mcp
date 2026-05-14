@@ -22,6 +22,7 @@ function optionalService(
   baseUrlEnv: string,
   auth: ServiceAuth,
   defaultPathPrefix: string,
+  defaultPathParams?: Record<string, string>,
 ): ServiceDefinition | undefined {
   const baseUrl = readEnv(baseUrlEnv);
 
@@ -35,6 +36,7 @@ function optionalService(
     baseUrl,
     auth,
     defaultPathPrefix,
+    defaultPathParams,
   };
 }
 
@@ -97,6 +99,14 @@ export function loadConfig(): AppConfig {
     optionalService("proxmox", "Proxmox", "PROXMOX_BASE_URL", proxmoxAuth(), "/api2/json"),
     optionalService("memos", "Memos", "MEMOS_BASE_URL", bearerAuth("MEMOS_TOKEN"), "/api/v1"),
     perplexityService(),
+    optionalService(
+      "nextdns",
+      "NextDNS",
+      "NEXTDNS_BASE_URL",
+      { type: "header", tokenEnv: "NEXTDNS_API_KEY", headerName: "X-Api-Key" },
+      `/profiles/${readEnv("NEXTDNS_PROFILE_ID", "39f768")}`,
+      { profileId: readEnv("NEXTDNS_PROFILE_ID", "39f768") },
+    ),
   ].filter((service): service is ServiceDefinition => service !== undefined);
 
   return {

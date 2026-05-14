@@ -167,7 +167,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
 
         const result = await callService(service, {
           method: endpoint.method,
-          path: interpolatePath(endpoint.path, input.pathParams),
+          path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
           query: input.query,
           body: input.body,
           headers: input.headers,

@@ -5,7 +5,8 @@ export type ServiceId =
   | "searxng"
   | "proxmox"
   | "memos"
-  | "perplexity";
+  | "perplexity"
+  | "nextdns";
 
 export type ServiceAuth =
   | { type: "none" }
@@ -20,6 +21,7 @@ export type ServiceDefinition = {
   baseUrl: string;
   auth: ServiceAuth;
   defaultPathPrefix: string;
+  defaultPathParams?: Record<string, string>;
 };
 
 export const SERVICE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
