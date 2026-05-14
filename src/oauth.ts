@@ -289,7 +289,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
   }
 
   const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
-  const expiresIn = 60 * 60 * 24 * 30;
+  const expiresIn = 60 * 60 * 24 * 90;
   accessTokens.set(accessToken, Date.now() + expiresIn * 1000);
   saveState();
 
