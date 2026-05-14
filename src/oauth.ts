@@ -107,31 +107,74 @@ export async function registerClient(req: Request): Promise<Response> {
   });
 }
 
-function bearerToken(req: Request): string {
-  const authorization = req.headers.get("authorization") ?? "";
-  const [scheme, token] = authorization.split(/\s+/, 2);
-  return scheme?.toLowerCase() === "bearer" ? token ?? "" : "";
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export function authorize(req: Request, accessToken: string): Response {
-  if (bearerToken(req) !== accessToken) {
-    return Response.json(
-      { error: "unauthorized", error_description: "Valid Bearer token required to authorize" },
-      {
-        status: 401,
-        headers: {
-          "WWW-Authenticate": "Bearer",
-        },
-      },
-    );
-  }
-
+export function authorizeForm(req: Request): Response {
   const url = new URL(req.url);
   const clientId = url.searchParams.get("client_id") ?? "";
   const redirectUri = url.searchParams.get("redirect_uri") ?? "";
   const codeChallenge = url.searchParams.get("code_challenge") ?? "";
   const codeChallengeMethod = url.searchParams.get("code_challenge_method") ?? "";
-  const state = url.searchParams.get("state");
+  const state = url.searchParams.get("state") ?? "";
+  const error = url.searchParams.get("error");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authorize — vmhq-mcp</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 2rem; width: 100%; max-width: 380px; }
+    h1 { margin: 0 0 0.5rem; font-size: 1.25rem; }
+    p { margin: 0 0 1.5rem; color: #888; font-size: 0.9rem; }
+    label { display: block; margin-bottom: 0.4rem; font-size: 0.85rem; color: #aaa; }
+    input[type="password"] { width: 100%; box-sizing: border-box; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid #333; background: #111; color: #e0e0e0; font-size: 1rem; outline: none; }
+    input[type="password"]:focus { border-color: #555; }
+    button { margin-top: 1rem; width: 100%; padding: 0.7rem; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #2563eb; }
+    .error { color: #f87171; font-size: 0.85rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>vmhq-mcp</h1>
+    <p>Enter your access token to authorize this connection.</p>
+    ${error ? `<div class="error">Invalid token. Please try again.</div>` : ""}
+    <form method="POST" action="/oauth/authorize">
+      <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
+      <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
+      <input type="hidden" name="code_challenge" value="${escapeHtml(codeChallenge)}">
+      <input type="hidden" name="code_challenge_method" value="${escapeHtml(codeChallengeMethod)}">
+      <input type="hidden" name="state" value="${escapeHtml(state)}">
+      <label for="token">Access Token</label>
+      <input type="password" id="token" name="token" autofocus placeholder="vmhq_…">
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>`;
+
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+}
+
+export async function authorize(req: Request, accessToken: string): Promise<Response> {
+  const form = await req.formData();
+  const token = String(form.get("token") ?? "");
+  const clientId = String(form.get("client_id") ?? "");
+  const redirectUri = String(form.get("redirect_uri") ?? "");
+  const codeChallenge = String(form.get("code_challenge") ?? "");
+  const codeChallengeMethod = String(form.get("code_challenge_method") ?? "");
+  const state = form.get("state") as string | null;
+
+  if (token !== accessToken) {
+    const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
+    if (state) params.set("state", state);
+    return Response.redirect(`/oauth/authorize?${params}`, 303);
+  }
 
   const client = clients.get(clientId);
 

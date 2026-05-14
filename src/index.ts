@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import {
   authorizationServerMetadata,
   authorize,
+  authorizeForm,
   exchangeToken,
   isOAuthAccessToken,
   protectedResourceMetadata,
@@ -66,6 +67,10 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+      return authorizeForm(req);
+    }
+
+    if (url.pathname === "/oauth/authorize" && req.method === "POST") {
       return authorize(req, config.accessToken);
     }
 
