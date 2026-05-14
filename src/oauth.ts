@@ -145,6 +145,14 @@ export function mcpUrl(config: OAuthConfig, req: Request): string {
   return `${baseUrl(config, req)}/mcp`;
 }
 
+// ─── CORS headers (required for browser-based OAuth discovery) ────────────────
+
+export const OAUTH_CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+} as const;
+
 // ─── Redirect URI validation ──────────────────────────────────────────────────
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -196,7 +204,7 @@ function redirectUriMatches(requested: string, registered: string): boolean {
 
 // ─── OAuth endpoints ──────────────────────────────────────────────────────────
 
-const SECURITY_HEADERS = {
+const FORM_SECURITY_HEADERS = {
   "Content-Security-Policy":
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "Referrer-Policy": "no-referrer",
@@ -212,7 +220,8 @@ export function unauthorized(config: OAuthConfig, req: Request): Response {
     {
       status: 401,
       headers: {
-        "WWW-Authenticate": `Bearer resource_metadata="${root}/.well-known/oauth-protected-resource"`,
+        "WWW-Authenticate": `Bearer realm="${root}", resource_metadata="${root}/.well-known/oauth-protected-resource"`,
+        ...OAUTH_CORS_HEADERS,
       },
     },
   );
@@ -221,30 +230,36 @@ export function unauthorized(config: OAuthConfig, req: Request): Response {
 /** RFC 9728 – /.well-known/oauth-protected-resource */
 export function protectedResourceMetadata(config: OAuthConfig, req: Request): Response {
   const root = baseUrl(config, req);
-  return Response.json({
-    resource: `${root}/mcp`,
-    authorization_servers: [root],
-    bearer_methods_supported: ["header"],
-    scopes_supported: ["mcp"],
-  });
+  return Response.json(
+    {
+      resource: `${root}/mcp`,
+      authorization_servers: [root],
+      bearer_methods_supported: ["header"],
+      scopes_supported: ["mcp"],
+    },
+    { headers: OAUTH_CORS_HEADERS },
+  );
 }
 
 /** RFC 8414 – /.well-known/oauth-authorization-server */
 export function authorizationServerMetadata(config: OAuthConfig, req: Request): Response {
   const root = baseUrl(config, req);
-  return Response.json({
-    issuer: root,
-    authorization_endpoint: `${root}/oauth/authorize`,
-    token_endpoint: `${root}/oauth/token`,
-    registration_endpoint: `${root}/oauth/register`,
-    revocation_endpoint: `${root}/oauth/revoke`,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code"],
-    code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["mcp"],
-    ...(config.iconUrl ? { logo_uri: config.iconUrl } : {}),
-  });
+  return Response.json(
+    {
+      issuer: root,
+      authorization_endpoint: `${root}/oauth/authorize`,
+      token_endpoint: `${root}/oauth/token`,
+      registration_endpoint: `${root}/oauth/register`,
+      revocation_endpoint: `${root}/oauth/revoke`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      scopes_supported: ["mcp"],
+      ...(config.iconUrl ? { logo_uri: config.iconUrl } : {}),
+    },
+    { headers: OAUTH_CORS_HEADERS },
+  );
 }
 
 /** RFC 7591 – dynamic client registration */
@@ -257,7 +272,7 @@ export async function registerClient(req: Request): Promise<Response> {
     : [];
 
   if (redirectUris.length === 0) {
-    return Response.json({ error: "invalid_redirect_uris" }, { status: 400 });
+    return Response.json({ error: "invalid_redirect_uris" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
 
   const clientId = `vmhq_${randomBytes(18).toString("base64url")}`;
@@ -273,16 +288,19 @@ export async function registerClient(req: Request): Promise<Response> {
 
   log("info", "oauth_client_registered", { clientId, redirectUriCount: redirectUris.length });
 
-  return Response.json({
-    client_id: clientId,
-    client_id_issued_at: clientIdIssuedAt,
-    redirect_uris: redirectUris,
-    token_endpoint_auth_method: "none",
-    grant_types: ["authorization_code"],
-    response_types: ["code"],
-    scope: "mcp",
-    ...(client.clientName ? { client_name: client.clientName } : {}),
-  }, { status: 201 });
+  return Response.json(
+    {
+      client_id: clientId,
+      client_id_issued_at: clientIdIssuedAt,
+      redirect_uris: redirectUris,
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code"],
+      response_types: ["code"],
+      scope: "mcp",
+      ...(client.clientName ? { client_name: client.clientName } : {}),
+    },
+    { status: 201, headers: OAUTH_CORS_HEADERS },
+  );
 }
 
 // ─── Authorization form ───────────────────────────────────────────────────────
@@ -344,7 +362,7 @@ export function authorizeForm(req: Request, _config: OAuthConfig): Response {
 </html>`;
 
   return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS },
+    headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
   });
 }
 
@@ -465,7 +483,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
   } = params;
 
   if (grantType !== "authorization_code") {
-    return Response.json({ error: "unsupported_grant_type" }, { status: 400 });
+    return Response.json({ error: "unsupported_grant_type" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
 
   const ac = codes.get(code);
@@ -473,25 +491,25 @@ export async function exchangeToken(req: Request): Promise<Response> {
   codes.delete(code);
 
   if (!ac) {
-    return Response.json({ error: "invalid_grant" }, { status: 400 });
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
   if (ac.expiresAt < Date.now()) {
-    return Response.json({ error: "invalid_grant" }, { status: 400 });
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
   if (ac.clientId !== clientId) {
-    return Response.json({ error: "invalid_grant" }, { status: 400 });
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
   // RFC 8252 §7.3: match redirect URI port-agnostic for loopback
   if (!redirectUriMatches(redirectUri, ac.redirectUri)) {
-    return Response.json({ error: "invalid_grant" }, { status: 400 });
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
   // PKCE S256 verification
   if (sha256(codeVerifier) !== ac.codeChallenge) {
-    return Response.json({ error: "invalid_grant" }, { status: 400 });
+    return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
   // RFC 8707: if resource was bound at authorize time it must match token request
   if (ac.resource && resource && ac.resource !== resource) {
-    return Response.json({ error: "invalid_target" }, { status: 400 });
+    return Response.json({ error: "invalid_target" }, { status: 400, headers: OAUTH_CORS_HEADERS });
   }
 
   const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
@@ -506,12 +524,15 @@ export async function exchangeToken(req: Request): Promise<Response> {
 
   log("info", "oauth_access_token_issued", { clientId, expiresIn: TOKEN_TTL_S });
 
-  return Response.json({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: TOKEN_TTL_S,
-    scope: ac.scopes.join(" "),
-  });
+  return Response.json(
+    {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: TOKEN_TTL_S,
+      scope: ac.scopes.join(" "),
+    },
+    { headers: OAUTH_CORS_HEADERS },
+  );
 }
 
 // ─── POST /oauth/revoke ───────────────────────────────────────────────────────
@@ -519,12 +540,12 @@ export async function exchangeToken(req: Request): Promise<Response> {
 export async function revokeToken(req: Request): Promise<Response> {
   const params = await parseFormOrJson(req);
   const token = params.token ?? "";
-  if (!token) return Response.json({ error: "invalid_request" }, { status: 400 });
+  if (!token) return Response.json({ error: "invalid_request" }, { status: 400, headers: OAUTH_CORS_HEADERS });
 
   const existed = accessTokens.delete(sha256(token));
   if (existed) saveState();
 
-  return Response.json({});
+  return Response.json({}, { headers: OAUTH_CORS_HEADERS });
 }
 
 // ─── Token verification ───────────────────────────────────────────────────────
