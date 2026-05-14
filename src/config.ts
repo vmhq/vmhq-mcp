@@ -81,6 +81,23 @@ function perplexityService(): ServiceDefinition | undefined {
   };
 }
 
+function nextdnsService(): ServiceDefinition | undefined {
+  const service = optionalService(
+    "nextdns",
+    "NextDNS",
+    "NEXTDNS_BASE_URL",
+    { type: "header", tokenEnv: "NEXTDNS_API_KEY", headerName: "X-Api-Key" },
+    "/profiles/{profileId}",
+  );
+  const profileId = readEnv("NEXTDNS_PROFILE_ID");
+
+  if (service && profileId) {
+    service.defaultPathParams = { profileId };
+  }
+
+  return service;
+}
+
 export function loadConfig(): AppConfig {
   const minifluxAuthMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
   const services = [
@@ -99,14 +116,7 @@ export function loadConfig(): AppConfig {
     optionalService("proxmox", "Proxmox", "PROXMOX_BASE_URL", proxmoxAuth(), "/api2/json"),
     optionalService("memos", "Memos", "MEMOS_BASE_URL", bearerAuth("MEMOS_TOKEN"), "/api/v1"),
     perplexityService(),
-    optionalService(
-      "nextdns",
-      "NextDNS",
-      "NEXTDNS_BASE_URL",
-      { type: "header", tokenEnv: "NEXTDNS_API_KEY", headerName: "X-Api-Key" },
-      `/profiles/${readEnv("NEXTDNS_PROFILE_ID", "39f768")}`,
-      { profileId: readEnv("NEXTDNS_PROFILE_ID", "39f768") },
-    ),
+    nextdnsService(),
   ].filter((service): service is ServiceDefinition => service !== undefined);
 
   return {
