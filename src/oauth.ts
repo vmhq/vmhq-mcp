@@ -1,5 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export type OAuthConfig = {
@@ -62,6 +62,7 @@ function saveState(): void {
       accessTokens: [...accessTokens.entries()],
     };
     writeFileSync(STATE_PATH, JSON.stringify(state), "utf-8");
+    chmodSync(STATE_PATH, 0o600);
   } catch (err) {
     console.error("Failed to persist OAuth state", err);
   }
@@ -80,6 +81,12 @@ function baseUrl(config: OAuthConfig, req: Request): string {
 
 export function mcpUrl(config: OAuthConfig, req: Request): string {
   return `${baseUrl(config, req)}/mcp`;
+}
+
+export function constantTimeEqual(a: string, b: string): boolean {
+  const hashA = createHash("sha256").update(a).digest();
+  const hashB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(hashA, hashB);
 }
 
 export function isOAuthAccessToken(token: string): boolean {
@@ -125,6 +132,7 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
     authorization_endpoint: `${root}/oauth/authorize`,
     token_endpoint: `${root}/oauth/token`,
     registration_endpoint: `${root}/oauth/register`,
+    revocation_endpoint: `${root}/oauth/revoke`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
@@ -134,7 +142,20 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
   });
 }
 
-export async function registerClient(req: Request): Promise<Response> {
+function isValidRedirectUri(uri: string): boolean {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== "https:") return false;
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "0.0.0.0") return false;
+    if (parsed.username || parsed.password) return false;
+    if (parsed.hostname.includes("*")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function registerClient(req: Request, accessToken: string): Promise<Response> {
   const body = await req.json().catch(() => ({}));
   const redirectUris = Array.isArray(body.redirect_uris)
     ? body.redirect_uris.filter((uri: unknown): uri is string => typeof uri === "string")
@@ -142,6 +163,12 @@ export async function registerClient(req: Request): Promise<Response> {
 
   if (redirectUris.length === 0) {
     return Response.json({ error: "invalid_redirect_uris" }, { status: 400 });
+  }
+
+  for (const uri of redirectUris) {
+    if (!isValidRedirectUri(uri)) {
+      return Response.json({ error: "invalid_redirect_uri", error_description: "redirect_uri must use HTTPS and must not be a localhost address" }, { status: 400 });
+    }
   }
 
   const clientId = `vmhq_${randomBytes(18).toString("base64url")}`;
@@ -181,6 +208,7 @@ export function authorizeForm(req: Request): Response {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; form-action 'self'">
   <title>Authorize — vmhq-mcp</title>
   <style>
     body { font-family: system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
@@ -226,7 +254,7 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
   const codeChallengeMethod = String(form.get("code_challenge_method") ?? "");
   const state = form.get("state") as string | null;
 
-  if (token !== accessToken) {
+  if (!constantTimeEqual(token, accessToken)) {
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
     if (state) params.set("state", state);
     return Response.redirect(`/oauth/authorize?${params}`, 303);
@@ -240,6 +268,10 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
 
   if (!codeChallenge || codeChallengeMethod !== "S256") {
     return Response.json({ error: "invalid_request", error_description: "S256 PKCE is required" }, { status: 400 });
+  }
+
+  if (!isValidRedirectUri(redirectUri)) {
+    return Response.json({ error: "invalid_redirect_uri" }, { status: 400 });
   }
 
   const code = randomBytes(24).toString("base64url");
@@ -301,4 +333,21 @@ export async function exchangeToken(req: Request): Promise<Response> {
     expires_in: expiresIn,
     scope: "mcp",
   });
+}
+
+export async function revokeToken(req: Request): Promise<Response> {
+  const form = await req.formData();
+  const token = String(form.get("token") ?? "");
+
+  if (!token) {
+    return Response.json({ error: "invalid_request" }, { status: 400 });
+  }
+
+  const existed = accessTokens.delete(token);
+
+  if (existed) {
+    saveState();
+  }
+
+  return Response.json({});
 }
