@@ -22,7 +22,7 @@ Correctness gates are `bun run typecheck` and `bun test`. The current test suite
 
 Only `MCP_ACCESS_TOKEN` is required at startup (server crashes without it). All other env vars are optional.
 
-A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No error, no tools registered. Services that use `enabledWhenEnv` (currently Perplexity via OpenRouter) are disabled unless that env var is present.
+A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No error, no tools registered.
 
 The `static` auth type (used by Proxmox) sets a fixed `headerName: value` pair directly at startup (no env lookup at request time).
 

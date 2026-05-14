@@ -5,7 +5,6 @@ export type ServiceId =
   | "searxng"
   | "proxmox"
   | "memos"
-  | "perplexity"
   | "nextdns";
 
 export type ServiceAuth =

@@ -59,6 +59,6 @@ The three service MCP tools are registered automatically from enabled `services`
 
 ## Environment variables
 
-`MCP_ACCESS_TOKEN` is the only hard requirement to start. Service `*_BASE_URL` vars are optional; an unset or empty base URL disables that service. Registry entries with `enabledWhenEnv` (currently Perplexity via OpenRouter through `OPENROUTER_API_KEY`) are disabled unless that env var is present. Service tokens are read lazily at request time from `process.env` — missing tokens produce a normalized `missing_upstream_credentials` tool error instead of crashing.
+`MCP_ACCESS_TOKEN` is the only hard requirement to start. Service `*_BASE_URL` vars are optional; an unset or empty base URL disables that service. Registry entries with `enabledWhenEnv` are disabled unless that env var is present. Service tokens are read lazily at request time from `process.env` — missing tokens produce a normalized `missing_upstream_credentials` tool error instead of crashing.
 
 OAuth client registrations and access token hashes persist to `MCP_OAUTH_STATE_PATH` (default `./data/oauth-state.json`). Authorization codes are in-memory, short-lived, and single-use. `/oauth/register` is public by design for Dynamic Client Registration, while registration still validates HTTPS redirect URIs and is rate-limited in memory. OAuth and `/mcp` routes are rate-limited in memory. `MCP_CORS_ORIGIN`, `MCP_UPSTREAM_TIMEOUT_MS`, `MCP_LOG_LEVEL`, `MCP_PUBLIC_URL`, and `MCP_ICON_URL` tune runtime behavior.

@@ -85,15 +85,6 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     defaultPathPrefix: "/api/v1",
   },
   {
-    id: "perplexity",
-    title: "Perplexity via OpenRouter",
-    enabledWhenEnv: "OPENROUTER_API_KEY",
-    defaultBaseUrl: "https://openrouter.ai/api/v1",
-    baseUrlEnv: "OPENROUTER_BASE_URL",
-    auth: bearerAuth("OPENROUTER_API_KEY"),
-    defaultPathPrefix: "/",
-  },
-  {
     id: "nextdns",
     title: "NextDNS",
     baseUrlEnv: "NEXTDNS_BASE_URL",

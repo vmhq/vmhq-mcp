@@ -283,22 +283,6 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       { operationId: "get_instance_profile", method: "GET", path: "/api/v1/instance/profile", group: "instance", summary: "Get instance profile." },
     ],
   },
-  perplexity: {
-    service: "perplexity",
-    title: "Perplexity via OpenRouter",
-    docsUrl: "https://openrouter.ai/docs",
-    checkedAt,
-    auth: "Bearer token (OPENROUTER_API_KEY) in Authorization header.",
-    notes: [
-      "Use the perplexity_search tool — do NOT call OpenRouter endpoints directly.",
-      "perplexity_search accepts query, model (sonar_pro or sonar_reasoning_pro), optional system prompt and maxTokens.",
-      "Responses include a content string and a citations array of source URLs.",
-      "Model selection: sonar_pro for fast factual lookup (default); sonar_reasoning_pro for comparisons/synthesis requiring explicit reasoning.",
-      "Always append the mandatory signature at the end of delivered responses: 'Elaborado con Perplexity [Model Name]' (e.g. 'Elaborado con Perplexity Sonar Pro').",
-      "Rate limits depend on OpenRouter credit balance.",
-    ],
-    endpoints: [],
-  },
   nextdns: {
     service: "nextdns",
     title: "NextDNS API",

@@ -12,10 +12,9 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - SearXNG
 - Proxmox
 - Memos
-- Perplexity via OpenRouter (sonar-pro, sonar-reasoning-pro)
 - NextDNS
 
-Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL` (o su API key en el caso de Perplexity), el MCP arranca igual y no registra las herramientas de ese servicio.
+Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL`, el MCP arranca igual y no registra las herramientas de ese servicio.
 
 Cada servicio expone tres tipos de herramientas:
 
@@ -98,12 +97,6 @@ NEXTDNS_PROFILE_ID=your-profile-id
 PROXMOX_TOKEN_ID=root@pam!mcp
 PROXMOX_TOKEN_SECRET=
 
-# Perplexity via OpenRouter
-# Habilita busqueda con los modelos sonar-pro y sonar-reasoning-pro.
-# Obtener clave en https://openrouter.ai/keys
-OPENROUTER_API_KEY=
-# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # solo si usas un proxy
-
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
 
@@ -155,41 +148,7 @@ Por cada servicio existen:
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
-- `perplexity_api_reference`, `perplexity_operation`, `perplexity_request`
 - `nextdns_api_reference`, `nextdns_operation`, `nextdns_request`
-
-### Perplexity via OpenRouter
-
-El servicio `perplexity` expone dos operaciones catalogadas. Deep Research no se cataloga intencionalmente por su costo alto:
-
-| operationId | Modelo | Velocidad | Cuando usar |
-|---|---|---|---|
-| `search_sonar_pro` | `perplexity/sonar-pro` | Rapido | Noticias, precios, datos actuales, preguntas directas. **Usar por defecto.** |
-| `search_sonar_reasoning_pro` | `perplexity/sonar-reasoning-pro` | Medio | Comparaciones, sintesis de fuentes contradictorias, recomendaciones con justificacion logica. |
-
-Cuando usas `perplexity_operation`, el modelo se inyecta automaticamente segun el `operationId`. Puedes omitir `body.model` en llamadas normales; solo incluyelo si necesitas sobreescribir el modelo deliberadamente.
-
-Las respuestas incluyen citas inline (`[1]`, `[2]`, ...) en el contenido y pueden incluir URLs en `message.annotations` o en un array `citations`, segun la forma de respuesta de OpenRouter/Perplexity.
-
-Al final de cada respuesta entregada al usuario debe aparecer la firma:
-
-```
-Elaborado con Perplexity [Nombre del modelo]
-```
-
-Ejemplos: `Elaborado con Perplexity Sonar Pro` / `Elaborado con Perplexity Sonar Reasoning Pro`.
-
-Ejemplo de llamada con `perplexity_operation`:
-
-```json
-{
-  "operationId": "search_sonar_pro",
-  "body": {
-    "messages": [{ "role": "user", "content": "¿Cual es el precio actual del Bitcoin?" }],
-    "max_tokens": 1024
-  }
-}
-```
 
 Flujo recomendado para agentes:
 
@@ -244,5 +203,4 @@ El catalogo local se construyo desde la documentacion oficial revisada el 2026-0
 - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
-- OpenRouter API: https://openrouter.ai/docs
 - NextDNS API: https://nextdns.io/api
