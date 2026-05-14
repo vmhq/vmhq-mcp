@@ -136,6 +136,7 @@ Por cada servicio existen:
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
+- `perplexity_api_reference`, `perplexity_operation`, `perplexity_request`
 
 Flujo recomendado para agentes:
 
@@ -190,3 +191,4 @@ El catalogo local se construyo desde la documentacion oficial revisada el 2026-0
 - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
+- OpenRouter API: https://openrouter.ai/docs
