@@ -4,7 +4,8 @@ export type ServiceId =
   | "karakeep"
   | "searxng"
   | "proxmox"
-  | "memos";
+  | "memos"
+  | "perplexity";
 
 export type ServiceAuth =
   | { type: "none" }

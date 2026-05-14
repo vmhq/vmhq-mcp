@@ -66,6 +66,19 @@ export type AppConfig = {
   services: ServiceDefinition[];
 };
 
+function perplexityService(): ServiceDefinition | undefined {
+  const apiKey = readEnv("OPENROUTER_API_KEY");
+  if (!apiKey) return undefined;
+
+  return {
+    id: "perplexity",
+    title: "Perplexity via OpenRouter",
+    baseUrl: readEnv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    auth: bearerAuth("OPENROUTER_API_KEY"),
+    defaultPathPrefix: "/",
+  };
+}
+
 export function loadConfig(): AppConfig {
   const minifluxAuthMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
   const services = [
@@ -83,6 +96,7 @@ export function loadConfig(): AppConfig {
     optionalService("searxng", "SearXNG", "SEARXNG_BASE_URL", { type: "none" }, "/"),
     optionalService("proxmox", "Proxmox", "PROXMOX_BASE_URL", proxmoxAuth(), "/api2/json"),
     optionalService("memos", "Memos", "MEMOS_BASE_URL", bearerAuth("MEMOS_TOKEN"), "/api/v1"),
+    perplexityService(),
   ].filter((service): service is ServiceDefinition => service !== undefined);
 
   return {

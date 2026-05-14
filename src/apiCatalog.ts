@@ -282,6 +282,49 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       { operationId: "get_instance_profile", method: "GET", path: "/api/v1/instance/profile", group: "instance", summary: "Get instance profile." },
     ],
   },
+  perplexity: {
+    service: "perplexity",
+    title: "Perplexity via OpenRouter",
+    docsUrl: "https://openrouter.ai/docs",
+    checkedAt,
+    auth: "Bearer token (OPENROUTER_API_KEY) in Authorization header.",
+    notes: [
+      "All three operations post to POST /chat/completions. Set the 'model' field in the body to select the Perplexity model.",
+      "Responses include inline citations ([1], [2], ...) in the content and a top-level 'citations' array of source URLs.",
+      "Model selection guide: sonar_pro for fast factual lookup (default); sonar_reasoning_pro for comparisons/synthesis requiring CoT; deep_research for exhaustive multi-source reports.",
+      "Always append the mandatory signature at the end of delivered responses: 'Elaborado con Perplexity [Model Name]' (e.g. 'Elaborado con Perplexity Sonar Pro').",
+      "Rate limits depend on OpenRouter credit balance. Check https://openrouter.ai/account for usage.",
+    ],
+    endpoints: [
+      {
+        operationId: "search_sonar_pro",
+        method: "POST",
+        path: "/chat/completions",
+        group: "search",
+        summary: "Fast factual search with web grounding. Default model for most queries: news, prices, current data, specific facts (1-3 sources).",
+        body: '{ "model": "perplexity/sonar-pro", "messages": [{ "role": "user", "content": "<query>" }], "max_tokens": 1024 }',
+        notes: "Append 'Elaborado con Perplexity Sonar Pro' to the final response delivered to the user.",
+      },
+      {
+        operationId: "search_sonar_reasoning_pro",
+        method: "POST",
+        path: "/chat/completions",
+        group: "search",
+        summary: "Chain-of-thought reasoning with web search. Use for comparisons, multi-source synthesis, recommendations requiring explicit logic.",
+        body: '{ "model": "perplexity/sonar-reasoning-pro", "messages": [{ "role": "user", "content": "<query>" }], "max_tokens": 2048 }',
+        notes: "Replaces deprecated sonar-reasoning (removed Dec 2025). Append 'Elaborado con Perplexity Sonar Reasoning Pro' to the final response.",
+      },
+      {
+        operationId: "deep_research",
+        method: "POST",
+        path: "/chat/completions",
+        group: "search",
+        summary: "Exhaustive multi-round research. Use for market reports, literature reviews, and investigations requiring many cited sources.",
+        body: '{ "model": "perplexity/sonar-deep-research", "messages": [{ "role": "user", "content": "<query>" }], "max_tokens": 8192 }',
+        notes: "Slowest and most expensive. Reserve for tasks where coverage and depth are critical. Append 'Elaborado con Perplexity Sonar Deep Research' to the final response.",
+      },
+    ],
+  },
 };
 
 export function catalogFor(serviceId: ServiceId): ApiCatalog {
