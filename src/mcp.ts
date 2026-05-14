@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
+import { PERPLEXITY_MODELS, searchPerplexity, type PerplexityModelKey } from "./perplexitySearch.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceRequestInput } from "./services.js";
 
@@ -145,6 +146,52 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
   );
 
   for (const service of services) {
+    if (service.id === "perplexity") {
+      server.tool(
+        "perplexity_search",
+        "Search the web using Perplexity AI via OpenRouter. Returns grounded answers with inline citations. Use sonar_pro for fast factual queries (news, prices, specific facts). Use sonar_reasoning_pro for comparisons, multi-source synthesis, or questions requiring explicit reasoning.",
+        {
+          query: z.string().min(1).describe("The search query or question."),
+          model: z
+            .enum(["sonar_pro", "sonar_reasoning_pro"] as [PerplexityModelKey, ...PerplexityModelKey[]])
+            .default("sonar_pro")
+            .describe("Model to use. sonar_pro: fast factual lookup (default). sonar_reasoning_pro: chain-of-thought reasoning for complex comparisons."),
+          system: z.string().optional().describe("Optional system prompt to guide response style or language."),
+          maxTokens: z.number().optional().describe("Optional maximum tokens for the response."),
+        },
+        { title: "Perplexity Search" },
+        async ({ query, model, system, maxTokens }: { query: string; model: PerplexityModelKey; system?: string; maxTokens?: number }) => {
+          const apiKey = process.env["OPENROUTER_API_KEY"] ?? "";
+
+          if (!apiKey) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: responseText({ error: { type: "missing_upstream_credentials", service: "perplexity", message: "Missing required credential environment variable: OPENROUTER_API_KEY", retryable: false } }),
+                },
+              ],
+              isError: true,
+            };
+          }
+
+          const modelId = PERPLEXITY_MODELS[model];
+          const result = await searchPerplexity(apiKey, service.baseUrl, modelId, query, {
+            system,
+            maxTokens,
+            timeoutMs: upstreamTimeoutMs,
+          });
+
+          const isError = "error" in result;
+          return {
+            content: [{ type: "text" as const, text: responseText(result) }],
+            ...(isError ? { isError: true } : {}),
+          };
+        },
+      );
+      continue;
+    }
+
     server.tool(
       `${service.id}_api_reference`,
       `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
