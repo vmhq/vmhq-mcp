@@ -321,8 +321,7 @@ export async function authorize(req: Request, accessToken: string, config: OAuth
     log("info", "oauth_authorize_invalid_token", { clientId });
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "1" });
     if (state) params.set("state", state);
-    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
-    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
+    return new Response(null, { status: 303, headers: { Location: `/oauth/authorize?${params}` } });
   }
 
   const client = clients.get(clientId);
@@ -337,16 +336,14 @@ export async function authorize(req: Request, accessToken: string, config: OAuth
     }
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: !client ? "client_not_found" : "invalid_redirect_uri" });
     if (state) params.set("state", state);
-    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
-    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
+    return new Response(null, { status: 303, headers: { Location: `/oauth/authorize?${params}` } });
   }
 
   if (!codeChallenge || codeChallengeMethod !== "S256") {
     log("error", "oauth_authorize_invalid_pkce", { clientId });
     const params = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, code_challenge_method: codeChallengeMethod, error: "invalid_pkce" });
     if (state) params.set("state", state);
-    const errorRedirectOrigin = config.publicUrl ? new URL(config.publicUrl).origin : new URL(req.url).origin;
-    return Response.redirect(new URL(`/oauth/authorize?${params}`, errorRedirectOrigin).toString(), 303);
+    return new Response(null, { status: 303, headers: { Location: `/oauth/authorize?${params}` } });
   }
 
   pruneExpiredOAuthState();
