@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 
 export type OAuthConfig = {
   publicUrl?: string;
+  iconUrl?: string;
 };
 
 type Client = {
@@ -129,6 +130,7 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
     scopes_supported: ["mcp"],
+    ...(config.iconUrl ? { logo_uri: config.iconUrl } : {}),
   });
 }
 

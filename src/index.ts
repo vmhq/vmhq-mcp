@@ -13,7 +13,7 @@ import {
 } from "./oauth.js";
 
 const config = loadConfig();
-const oauthConfig = { publicUrl: config.publicUrl };
+const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl };
 
 function bearerToken(req: Request): string {
   const authorization = req.headers.get("authorization") ?? "";
