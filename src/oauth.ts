@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { log } from "./logger.js";
 
 export type OAuthConfig = {
   publicUrl?: string;
@@ -22,10 +23,22 @@ type AuthorizationCode = {
 
 const clients = new Map<string, Client>();
 const codes = new Map<string, AuthorizationCode>();
-// token → expiresAt (ms since epoch)
+// token SHA-256 hash → expiresAt (ms since epoch)
 const accessTokens = new Map<string, number>();
 
 const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json";
+const AUTHORIZATION_CODE_TTL_MS = 5 * 60 * 1000;
+const ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 90;
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+export function constantTimeEqual(a: string, b: string): boolean {
+  const hashA = createHash("sha256").update(a).digest();
+  const hashB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(hashA, hashB);
+}
 
 function loadState(): void {
   try {
@@ -43,9 +56,9 @@ function loadState(): void {
 
     const now = Date.now();
     if (Array.isArray(state.accessTokens)) {
-      for (const [token, expiresAt] of state.accessTokens) {
+      for (const [tokenHash, expiresAt] of state.accessTokens) {
         if (expiresAt > now) {
-          accessTokens.set(token, expiresAt);
+          accessTokens.set(tokenHash, expiresAt);
         }
       }
     }
@@ -61,14 +74,40 @@ function saveState(): void {
       clients: [...clients.entries()],
       accessTokens: [...accessTokens.entries()],
     };
-    writeFileSync(STATE_PATH, JSON.stringify(state), "utf-8");
+    const tmpPath = `${STATE_PATH}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(state), "utf-8");
+    chmodSync(tmpPath, 0o600);
+    renameSync(tmpPath, STATE_PATH);
     chmodSync(STATE_PATH, 0o600);
   } catch (err) {
-    console.error("Failed to persist OAuth state", err);
+    log("error", "oauth_state_persist_failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+export function pruneExpiredOAuthState(now = Date.now()): void {
+  let changed = false;
+
+  for (const [code, authorizationCode] of codes.entries()) {
+    if (authorizationCode.expiresAt <= now) {
+      codes.delete(code);
+      changed = true;
+    }
+  }
+
+  for (const [tokenHash, expiresAt] of accessTokens.entries()) {
+    if (expiresAt <= now) {
+      accessTokens.delete(tokenHash);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveState();
   }
 }
 
 loadState();
+setInterval(() => pruneExpiredOAuthState(), 60 * 60 * 1000).unref?.();
 
 function baseUrl(config: OAuthConfig, req: Request): string {
   if (config.publicUrl) {
@@ -83,17 +122,15 @@ export function mcpUrl(config: OAuthConfig, req: Request): string {
   return `${baseUrl(config, req)}/mcp`;
 }
 
-export function constantTimeEqual(a: string, b: string): boolean {
-  const hashA = createHash("sha256").update(a).digest();
-  const hashB = createHash("sha256").update(b).digest();
-  return timingSafeEqual(hashA, hashB);
-}
-
 export function isOAuthAccessToken(token: string): boolean {
-  const expiresAt = accessTokens.get(token);
+  if (!token) return false;
+
+  const tokenHash = sha256(token);
+  const expiresAt = accessTokens.get(tokenHash);
   if (expiresAt === undefined) return false;
   if (expiresAt <= Date.now()) {
-    accessTokens.delete(token);
+    accessTokens.delete(tokenHash);
+    saveState();
     return false;
   }
   return true;
@@ -149,26 +186,21 @@ function isValidRedirectUri(uri: string): boolean {
     if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "[::1]" || parsed.hostname === "0.0.0.0") return false;
     if (parsed.username || parsed.password) return false;
     if (parsed.hostname.includes("*")) return false;
+    if (parsed.hash) return false;
     return true;
   } catch {
     return false;
   }
 }
 
-export async function registerClient(req: Request, accessToken: string): Promise<Response> {
+export async function registerClient(req: Request, _accessToken?: string): Promise<Response> {
   const body = await req.json().catch(() => ({}));
   const redirectUris = Array.isArray(body.redirect_uris)
-    ? body.redirect_uris.filter((uri: unknown): uri is string => typeof uri === "string")
+    ? body.redirect_uris.filter((uri: unknown): uri is string => typeof uri === "string" && isValidRedirectUri(uri))
     : [];
 
   if (redirectUris.length === 0) {
     return Response.json({ error: "invalid_redirect_uris" }, { status: 400 });
-  }
-
-  for (const uri of redirectUris) {
-    if (!isValidRedirectUri(uri)) {
-      return Response.json({ error: "invalid_redirect_uri", error_description: "redirect_uri must use HTTPS and must not be a localhost address" }, { status: 400 });
-    }
   }
 
   const clientId = `vmhq_${randomBytes(18).toString("base64url")}`;
@@ -178,6 +210,8 @@ export async function registerClient(req: Request, accessToken: string): Promise
     clientName: typeof body.client_name === "string" ? body.client_name : undefined,
   });
   saveState();
+
+  log("info", "oauth_client_registered", { clientId, redirectUriCount: redirectUris.length });
 
   return Response.json({
     client_id: clientId,
@@ -193,6 +227,13 @@ export async function registerClient(req: Request, accessToken: string): Promise
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
 
 export function authorizeForm(req: Request): Response {
   const url = new URL(req.url);
@@ -235,14 +276,14 @@ export function authorizeForm(req: Request): Response {
       <input type="hidden" name="code_challenge_method" value="${escapeHtml(codeChallengeMethod)}">
       <input type="hidden" name="state" value="${escapeHtml(state)}">
       <label for="token">Access Token</label>
-      <input type="password" id="token" name="token" autofocus placeholder="vmhq_…">
+      <input type="password" id="token" name="token" autofocus placeholder="vmhq_…" autocomplete="current-password">
       <button type="submit">Authorize</button>
     </form>
   </div>
 </body>
 </html>`;
 
-  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+  return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS } });
 }
 
 export async function authorize(req: Request, accessToken: string): Promise<Response> {
@@ -262,7 +303,7 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
 
   const client = clients.get(clientId);
 
-  if (!client || !client.redirectUris.includes(redirectUri)) {
+  if (!client || !client.redirectUris.includes(redirectUri) || !isValidRedirectUri(redirectUri)) {
     return Response.json({ error: "invalid_client" }, { status: 400 });
   }
 
@@ -270,16 +311,14 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
     return Response.json({ error: "invalid_request", error_description: "S256 PKCE is required" }, { status: 400 });
   }
 
-  if (!isValidRedirectUri(redirectUri)) {
-    return Response.json({ error: "invalid_redirect_uri" }, { status: 400 });
-  }
+  pruneExpiredOAuthState();
 
   const code = randomBytes(24).toString("base64url");
   codes.set(code, {
     clientId,
     redirectUri,
     codeChallenge,
-    expiresAt: Date.now() + 5 * 60 * 1000,
+    expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS,
   });
 
   const redirect = new URL(redirectUri);
@@ -288,11 +327,13 @@ export async function authorize(req: Request, accessToken: string): Promise<Resp
     redirect.searchParams.set("state", state);
   }
 
+  log("info", "oauth_authorization_code_issued", { clientId });
+
   return Response.redirect(redirect, 302);
 }
 
 function s256(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
+  return sha256(verifier);
 }
 
 export async function exchangeToken(req: Request): Promise<Response> {
@@ -308,6 +349,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
     return Response.json({ error: "invalid_grant" }, { status: 400 });
   }
 
+  // Authorization codes are single-use, including failed exchange attempts.
   codes.delete(code);
 
   if (authorizationCode.expiresAt < Date.now()) {
@@ -323,14 +365,15 @@ export async function exchangeToken(req: Request): Promise<Response> {
   }
 
   const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
-  const expiresIn = 60 * 60 * 24 * 90;
-  accessTokens.set(accessToken, Date.now() + expiresIn * 1000);
+  accessTokens.set(sha256(accessToken), Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000);
   saveState();
+
+  log("info", "oauth_access_token_issued", { clientId, expiresIn: ACCESS_TOKEN_TTL_SECONDS });
 
   return Response.json({
     access_token: accessToken,
     token_type: "Bearer",
-    expires_in: expiresIn,
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
     scope: "mcp",
   });
 }
@@ -343,7 +386,7 @@ export async function revokeToken(req: Request): Promise<Response> {
     return Response.json({ error: "invalid_request" }, { status: 400 });
   }
 
-  const existed = accessTokens.delete(token);
+  const existed = accessTokens.delete(sha256(token));
 
   if (existed) {
     saveState();

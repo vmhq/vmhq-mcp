@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp.js";
 import { loadConfig } from "./config.js";
+import { log } from "./logger.js";
 import {
   authorizationServerMetadata,
   authorize,
@@ -41,7 +42,7 @@ function secureResponse(resp: Response): Response {
 }
 
 async function handleMcp(req: Request): Promise<Response> {
-  const server = createMcpServer(config.services, config.iconUrl);
+  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
@@ -58,6 +59,12 @@ const httpServer = Bun.serve({
   port: config.port,
   async fetch(req) {
     const url = new URL(req.url);
+    const startedAt = performance.now();
+
+    log("debug", "http_request_started", {
+      method: req.method,
+      path: url.pathname,
+    });
 
     if (url.pathname === "/health") {
       return secureResponse(json({
@@ -136,13 +143,20 @@ const httpServer = Bun.serve({
       return unauthorized(oauthConfig, req);
     }
 
-    return secureResponse(await handleMcp(req));
+    const response = await handleMcp(req);
+    log("info", "mcp_request_finished", {
+      method: req.method,
+      path: url.pathname,
+      status: response.status,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    return secureResponse(response);
   },
 });
 
-console.log(`vmhq-mcp listening on http://0.0.0.0:${config.port}/mcp`);
+log("info", "server_started", { url: `http://0.0.0.0:${config.port}/mcp` });
 if (config.publicUrl) {
-  console.log(`public MCP URL: ${config.publicUrl.replace(/\/$/, "")}/mcp`);
+  log("info", "server_public_url", { url: `${config.publicUrl.replace(/\/$/, "")}/mcp` });
 }
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

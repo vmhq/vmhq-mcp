@@ -104,10 +104,15 @@ OPENROUTER_API_KEY=
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
 
-# Optional security settings
+# Optional runtime/security settings
 # Restrict CORS to a specific origin (e.g. https://claude.ai). Defaults to *.
 # MCP_CORS_ORIGIN=https://claude.ai
+# Timeout for upstream API calls. Defaults to 30000.
+# MCP_UPSTREAM_TIMEOUT_MS=30000
+# Structured log level: silent, error, info, debug. Defaults to info.
+# MCP_LOG_LEVEL=info
 # Path for persisting OAuth state inside the container (matches the ./data:/app/data volume).
+# Stored OAuth access tokens are persisted as SHA-256 hashes.
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
 ```
 

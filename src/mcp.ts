@@ -77,7 +77,7 @@ function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, se
   };
 }
 
-export function createMcpServer(services: ServiceDefinition[], iconUrl: string): McpServer {
+export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000): McpServer {
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
@@ -165,16 +165,20 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
           };
         }
 
-        const result = await callService(service, {
-          method: endpoint.method,
-          path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
-          query: input.query,
-          body: input.body,
-          headers: input.headers,
-          fields: input.fields,
-          maxLength: input.maxLength,
-          domain: input.domain,
-        });
+        const result = await callService(
+          service,
+          {
+            method: endpoint.method,
+            path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
+            query: input.query,
+            body: input.body,
+            headers: input.headers,
+            fields: input.fields,
+            maxLength: input.maxLength,
+            domain: input.domain,
+          },
+          { timeoutMs: upstreamTimeoutMs, operationId: endpoint.operationId },
+        );
 
         return {
           content: [
@@ -196,7 +200,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string):
       serviceRequestSchema,
       { title: `${service.title} Request` },
       async (input: ServiceRequestInput) => {
-        const result = await callService(service, input);
+        const result = await callService(service, input, { timeoutMs: upstreamTimeoutMs });
 
         return {
           content: [

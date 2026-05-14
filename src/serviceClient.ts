@@ -1,3 +1,4 @@
+import { log } from "./logger.js";
 import type { ServiceDefinition, ServiceRequestInput } from "./services.js";
 
 const BLOCKED_REQUEST_HEADERS = new Set([
@@ -11,13 +12,36 @@ const BLOCKED_REQUEST_HEADERS = new Set([
 ]);
 
 const RESPONSE_HEADERS = ["content-type", "etag", "last-modified", "x-total-count"];
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+
+type NormalizedErrorType =
+  | "missing_upstream_credentials"
+  | "invalid_request"
+  | "upstream_timeout"
+  | "upstream_network_error"
+  | "upstream_error";
+
+function normalizedError(type: NormalizedErrorType, service: ServiceDefinition, message: string, retryable = false): unknown {
+  return {
+    error: {
+      type,
+      service: service.id,
+      message,
+      retryable,
+    },
+  };
+}
+
+function requiredTokenEnv(service: ServiceDefinition): string | undefined {
+  if (service.auth.type === "bearer" || service.auth.type === "header" || service.auth.type === "prefixed") {
+    return service.auth.tokenEnv;
+  }
+  return undefined;
+}
 
 function serviceToken(service: ServiceDefinition): string {
-  if (service.auth.type === "none" || service.auth.type === "static") {
-    return "";
-  }
-
-  return process.env[service.auth.tokenEnv] ?? "";
+  const tokenEnv = requiredTokenEnv(service);
+  return tokenEnv ? process.env[tokenEnv] ?? "" : "";
 }
 
 function authHeaders(service: ServiceDefinition): Record<string, string> {
@@ -72,17 +96,14 @@ export function interpolatePath(path: string, pathParams: Record<string, string 
   });
 }
 
-function buildUrl(service: ServiceDefinition, input: ServiceRequestInput): URL {
+export function buildUrl(service: ServiceDefinition, input: ServiceRequestInput): URL {
   if (/^https?:\/\//i.test(input.path)) {
     throw new Error("Use relative paths only. Absolute URLs are not allowed.");
   }
 
   const baseUrl = new URL(service.baseUrl);
-  // Ensure base ends with "/" so relative paths append to (not replace) the base path.
-  // new URL("/chat/completions", "https://host/api/v1") drops /api/v1; stripping the
-  // leading slash and using a trailing-slash base preserves it.
   const base = baseUrl.href.endsWith("/") ? baseUrl.href : `${baseUrl.href}/`;
-  const relativePath = input.path.replace(/^\/+/, "");
+  const relativePath = input.path.replace(/^\/+/u, "");
   const url = new URL(relativePath, base);
 
   if (url.origin !== baseUrl.origin) {
@@ -166,8 +187,30 @@ async function parseBody(response: Response): Promise<unknown> {
   return text;
 }
 
-export async function callService(service: ServiceDefinition, input: ServiceRequestInput): Promise<unknown> {
-  const url = buildUrl(service, input);
+export type CallServiceOptions = {
+  timeoutMs?: number;
+  operationId?: string;
+};
+
+export async function callService(
+  service: ServiceDefinition,
+  input: ServiceRequestInput,
+  options: CallServiceOptions = {},
+): Promise<unknown> {
+  const startedAt = performance.now();
+  let url: URL;
+
+  try {
+    url = buildUrl(service, input);
+  } catch (error) {
+    return normalizedError("invalid_request", service, error instanceof Error ? error.message : "Invalid request.");
+  }
+
+  const tokenEnv = requiredTokenEnv(service);
+  if (tokenEnv && !serviceToken(service)) {
+    return normalizedError("missing_upstream_credentials", service, `Missing required credential environment variable: ${tokenEnv}`);
+  }
+
   const headers: Record<string, string> = {
     Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
     ...cleanHeaders(input.headers),
@@ -181,34 +224,89 @@ export async function callService(service: ServiceDefinition, input: ServiceRequ
     headers["Content-Type"] ??= "application/json";
   }
 
-  const response = await fetch(url, {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  log("info", "upstream_request_started", {
+    service: service.id,
+    operationId: options.operationId,
     method: input.method,
-    headers,
-    body,
+    path: url.pathname,
   });
 
-  let responseBody = await parseBody(response);
-
-  if (input.fields && Array.isArray(input.fields) && input.fields.length > 0) {
-    responseBody = filterFields(responseBody, input.fields);
-  }
-
-  if (input.domain) {
-    responseBody = filterByDomain(responseBody, input.domain);
-  }
-
-  return {
-    service: service.id,
-    request: {
+  try {
+    const response = await fetch(url, {
       method: input.method,
-      url: `${url.pathname}${url.search}`,
-    },
-    response: {
-      ok: response.ok,
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    let responseBody = await parseBody(response);
+
+    if (input.fields && Array.isArray(input.fields) && input.fields.length > 0) {
+      responseBody = filterFields(responseBody, input.fields);
+    }
+
+    if (input.domain) {
+      responseBody = filterByDomain(responseBody, input.domain);
+    }
+
+    const durationMs = Math.round(performance.now() - startedAt);
+    log(response.ok ? "info" : "error", "upstream_request_finished", {
+      service: service.id,
+      operationId: options.operationId,
+      method: input.method,
+      path: url.pathname,
       status: response.status,
-      statusText: response.statusText,
-      headers: usefulResponseHeaders(response.headers),
-      body: responseBody,
-    },
-  };
+      durationMs,
+    });
+
+    return {
+      service: service.id,
+      request: {
+        method: input.method,
+        url: `${url.pathname}${url.search}`,
+      },
+      response: {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        headers: usefulResponseHeaders(response.headers),
+        body: responseBody,
+      },
+      ...(response.ok
+        ? {}
+        : {
+            error: {
+              type: "upstream_error",
+              service: service.id,
+              message: `Upstream responded with HTTP ${response.status}.`,
+              retryable: response.status >= 500,
+            },
+          }),
+    };
+  } catch (error) {
+    const durationMs = Math.round(performance.now() - startedAt);
+    const aborted = controller.signal.aborted;
+    log("error", "upstream_request_failed", {
+      service: service.id,
+      operationId: options.operationId,
+      method: input.method,
+      path: url.pathname,
+      durationMs,
+      error: error instanceof Error ? error.message : String(error),
+      timeout: aborted,
+    });
+
+    return normalizedError(
+      aborted ? "upstream_timeout" : "upstream_network_error",
+      service,
+      aborted ? `Upstream request exceeded ${timeoutMs}ms.` : error instanceof Error ? error.message : "Upstream request failed.",
+      true,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 }

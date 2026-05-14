@@ -29,7 +29,7 @@ Miniflux auth mode is controlled by `MINIFLUX_AUTH_MODE`:
 
 ## OAuth
 
-Entirely in-memory. Client registrations, authorization codes, and access tokens are lost on restart. No persistence layer exists. OAuth tokens are validated via `isOAuthAccessToken()` which checks a `Set<string>`. Bearer token auth uses a simple string comparison against `MCP_ACCESS_TOKEN`.
+Client registrations and OAuth access token hashes are persisted to `MCP_OAUTH_STATE_PATH` (defaults to `./data/oauth-state.json`). Authorization codes are in-memory, short-lived, single-use, and pruned periodically. Stored OAuth access tokens are SHA-256 hashes; `isOAuthAccessToken()` hashes the presented token and checks expiry. Bearer token auth still compares directly against `MCP_ACCESS_TOKEN` for non-OAuth clients.
 
 ## Docker
 
@@ -40,5 +40,5 @@ Image: `ghcr.io/vmhq/vmhq-mcp`. Dockerfile copies source `.ts` files and runs th
 - All imports use `.js` extensions (Bun/NodeNext resolution).
 - `src/services.ts` defines the `ServiceAuth` union and `ServiceDefinition` type — every service addition touches this file.
 - `src/apiCatalog.ts` exports `API_CATALOGS: Record<ServiceId, ApiCatalog>` — the only runtime data source for `*_api_reference` and `*_operation`.
-- `src/config.ts` `optionalService()` returns `undefined` to skip unconfigured services; the `.filter()` in `loadConfig()` removes them.
+- `src/serviceRegistry.ts` declares service metadata in one registry; `src/config.ts` maps registry entries to `ServiceDefinition[]` and skips unconfigured services.
 - Response body parsing in `serviceClient.ts` returns `null` for empty bodies, parsed JSON for `application/json`, raw text otherwise.
