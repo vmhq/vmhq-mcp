@@ -1,0 +1,50 @@
+{
+  "name": "vmhq-mcp",
+  "version": "0.1.0",
+  "description": "Personal VMHQ MCP connector for Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS.",
+  "author": {
+    "name": "VMHQ",
+    "email": "vicentem@vmhq.cl",
+    "url": "https://github.com/vmhq"
+  },
+  "homepage": "https://github.com/vmhq/vmhq-mcp",
+  "repository": "https://github.com/vmhq/vmhq-mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "codex",
+    "home-assistant",
+    "miniflux",
+    "karakeep",
+    "searxng",
+    "proxmox",
+    "memos",
+    "nextdns"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "VMHQ MCP",
+    "shortDescription": "Connect Codex to your personal VMHQ MCP tools",
+    "longDescription": "Use the VMHQ MCP plugin to connect Codex to your remote personal MCP endpoint for Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS. The plugin stores no secrets; Codex reads the bearer token from VMHQ_MCP_API_KEY.",
+    "developerName": "VMHQ",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/vmhq/vmhq-mcp",
+    "privacyPolicyURL": "https://github.com/vmhq/vmhq-mcp",
+    "termsOfServiceURL": "https://github.com/vmhq/vmhq-mcp",
+    "defaultPrompt": [
+      "List my available VMHQ MCP tools",
+      "Search the web with my SearXNG MCP",
+      "Check my Home Assistant status"
+    ],
+    "brandColor": "#0F766E",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg",
+    "screenshots": []
+  }
+}

@@ -124,6 +124,30 @@ bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 
 El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor. `MCP_PUBLIC_URL` es opcional para ejecutar el servidor, pero sirve para documentar y exponer en `/health` la URL publica que deben usar los clientes MCP.
 
+### Marketplace personal para Codex
+
+Este repo incluye un marketplace personal de Codex en `.agents/plugins/marketplace.json` y un plugin wrapper en `plugins/vmhq-mcp/`.
+
+Para instalarlo desde este checkout:
+
+```bash
+codex plugin marketplace add /Users/vicentem/Github/vmhq-mcp
+```
+
+Para instalarlo desde GitHub:
+
+```bash
+codex plugin marketplace add vmhq/vmhq-mcp --ref main
+```
+
+En la UI de Codex, usa:
+
+- Origen: `vmhq/vmhq-mcp`
+- Referencia de Git: `main`
+- Rutas dispersas: dejar vacio
+
+El plugin registra el MCP remoto `https://mcp.vmhq.cl/mcp` y lee el bearer token desde `VMHQ_MCP_API_KEY`. No guarda secretos en el repo.
+
 ## Configuracion en Claude
 
 En Claude, agrega un conector personalizado con:

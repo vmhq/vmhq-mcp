@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "vmhq": {
+      "type": "http",
+      "url": "https://mcp.vmhq.cl/mcp",
+      "bearer_token_env_var": "VMHQ_MCP_API_KEY",
+      "note": "Personal VMHQ MCP endpoint. Set VMHQ_MCP_API_KEY locally to the same value as MCP_ACCESS_TOKEN on the server."
+    }
+  }
+}

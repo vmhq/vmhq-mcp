@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="VMHQ MCP">
+  <rect width="128" height="128" rx="28" fill="#0f766e"/>
+  <path d="M30 35h68v16H30zM30 56h68v16H30zM30 77h68v16H30z" fill="#ccfbf1"/>
+  <circle cx="43" cy="43" r="5" fill="#14b8a6"/>
+  <circle cx="85" cy="64" r="5" fill="#14b8a6"/>
+  <circle cx="43" cy="85" r="5" fill="#14b8a6"/>
+</svg>
