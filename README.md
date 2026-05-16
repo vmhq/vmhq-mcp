@@ -1,10 +1,10 @@
 # vmhq-mcp
 
-MCP remoto para exponer APIs personales a agentes de IA desde un unico punto de entrada.
+Remote MCP server that exposes personal self-hosted APIs to AI agents from a single authenticated entry point.
 
-El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKEN`) y mantiene las credenciales reales de cada servicio en variables de entorno del lado servidor.
+The server protects the MCP endpoint with its own bearer token (`MCP_ACCESS_TOKEN`) and keeps real service credentials in server-side environment variables.
 
-## Servicios incluidos
+## Included services
 
 - Home Assistant
 - Miniflux
@@ -14,15 +14,15 @@ El servidor protege el endpoint MCP con un bearer token propio (`MCP_ACCESS_TOKE
 - Memos
 - NextDNS
 
-Las URLs reales de cada servicio se configuran solo en `.env`. Cada servicio es opcional: si no defines su `*_BASE_URL`, el MCP arranca igual y no registra las herramientas de ese servicio.
+Each service's real URL is configured only in `.env`. Every service is optional: if you don't define its `*_BASE_URL`, the MCP server starts normally and simply doesn't register that service's tools.
 
-Cada servicio expone tres tipos de herramientas:
+Each service exposes three tool types:
 
-- `*_api_reference`: muestra las operaciones documentadas que conoce el MCP.
-- `*_operation`: ejecuta una operacion documentada por `operationId`.
-- `*_request`: llama cualquier endpoint relativo como escape hatch para endpoints nuevos o no catalogados.
+- `*_api_reference`: lists the documented operations the MCP knows about.
+- `*_operation`: executes a documented operation by `operationId`.
+- `*_request`: calls any relative endpoint as an escape hatch for new or uncatalogued endpoints.
 
-## Desarrollo local
+## Local development
 
 ```bash
 bun install
@@ -30,7 +30,7 @@ cp .env.example .env
 bun run dev
 ```
 
-El endpoint MCP queda disponible en:
+The MCP endpoint is available at:
 
 ```text
 http://localhost:3010/mcp
@@ -43,7 +43,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Ejemplo completo:
+Full example:
 
 ```yaml
 services:
@@ -62,9 +62,9 @@ volumes:
   vmhq-mcp-data:
 ```
 
-El volumen Docker `vmhq-mcp-data` persiste el estado OAuth (clientes registrados y hashes de tokens) entre reinicios del contenedor.
+The `vmhq-mcp-data` Docker volume persists OAuth state (registered clients and token hashes) across container restarts.
 
-## .env de ejemplo
+## Example .env
 
 ```dotenv
 # MCP server
@@ -112,9 +112,9 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
 ```
 
-## Configuracion en Codex
+## Codex configuration
 
-Ejemplo de configuracion remota:
+Remote configuration example:
 
 ```toml
 [mcp_servers.vmhq]
@@ -122,49 +122,49 @@ url = "https://mcp.example.com/mcp"
 bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 ```
 
-El valor de `VMHQ_MCP_ACCESS_TOKEN` debe coincidir con `MCP_ACCESS_TOKEN` en el servidor. `MCP_PUBLIC_URL` es opcional para ejecutar el servidor, pero sirve para documentar y exponer en `/health` la URL publica que deben usar los clientes MCP.
+The value of `VMHQ_MCP_ACCESS_TOKEN` must match `MCP_ACCESS_TOKEN` on the server. `MCP_PUBLIC_URL` is optional for running the server, but it documents and exposes the public URL that MCP clients should use, visible at `/health`.
 
-### Marketplace personal para Codex
+### Personal Codex marketplace
 
-Este repo incluye un marketplace personal de Codex en `.agents/plugins/marketplace.json` y un plugin wrapper en `plugins/vmhq-mcp/`.
+This repo includes a personal Codex marketplace at `.agents/plugins/marketplace.json` and a wrapper plugin at `plugins/vmhq-mcp/`.
 
-Para instalarlo desde este checkout:
+To install from this checkout:
 
 ```bash
 codex plugin marketplace add /Users/vicentem/Github/vmhq-mcp
 ```
 
-Para instalarlo desde GitHub:
+To install from GitHub:
 
 ```bash
 codex plugin marketplace add vmhq/vmhq-mcp --ref main
 ```
 
-En la UI de Codex, usa:
+In the Codex UI, use:
 
-- Origen: `vmhq/vmhq-mcp`
-- Referencia de Git: `main`
-- Rutas dispersas: dejar vacio
+- Source: `vmhq/vmhq-mcp`
+- Git ref: `main`
+- Sparse paths: leave empty
 
-El plugin registra el MCP remoto `https://mcp.vmhq.cl/mcp` y lee el bearer token desde `VMHQ_MCP_API_KEY`. No guarda secretos en el repo.
+The plugin registers the remote MCP at `https://mcp.vmhq.cl/mcp` and reads the bearer token from `VMHQ_MCP_API_KEY`. No secrets are stored in the repo.
 
-## Configuracion en Claude
+## Claude configuration
 
-En Claude, agrega un conector personalizado con:
+In Claude, add a custom connector pointing to:
 
 ```text
 https://mcp.example.com/mcp
 ```
 
-Deja vacios los campos avanzados de OAuth Client ID y OAuth Client Secret. El servidor publica metadata OAuth y soporta Dynamic Client Registration publico en `/oauth/register`, por lo que Claude puede registrarse y obtener su token automaticamente antes de la autorizacion.
+Leave the advanced OAuth Client ID and OAuth Client Secret fields empty. The server publishes OAuth metadata and supports public Dynamic Client Registration at `/oauth/register`, so Claude can register itself and obtain a token automatically before authorization.
 
-No pegues `MCP_ACCESS_TOKEN` en los campos OAuth de Claude. Ese token sigue existiendo para clientes que soportan bearer token directo, como pruebas con `curl` o configuraciones tipo Codex.
+Do not paste `MCP_ACCESS_TOKEN` into Claude's OAuth fields. That token is still available for clients that support direct bearer tokens, such as `curl` testing or Codex-style configurations.
 
-## Herramientas MCP
+## MCP tools
 
-`vmhq_status` siempre esta disponible y muestra que servicios estan habilitados o deshabilitados.
+`vmhq_status` is always available and shows which services are enabled or disabled.
 
-Por cada servicio existen:
+For each service:
 
 - `home_assistant_api_reference`, `home_assistant_operation`, `home_assistant_request`
 - `miniflux_api_reference`, `miniflux_operation`, `miniflux_request`
@@ -174,14 +174,14 @@ Por cada servicio existen:
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `nextdns_api_reference`, `nextdns_operation`, `nextdns_request`
 
-Flujo recomendado para agentes:
+Recommended agent workflow:
 
-1. Consultar `*_api_reference` con `group` o `search`.
-2. Elegir un `operationId`.
-3. Ejecutar `*_operation` con `pathParams`, `query` y/o `body`.
-4. Usar `*_request` solo cuando la documentacion del servicio tenga un endpoint que aun no este en el catalogo local.
+1. Call `*_api_reference` with `group` or `search`.
+2. Pick an `operationId`.
+3. Run `*_operation` with `pathParams`, `query`, and/or `body`.
+4. Use `*_request` only when the service's documentation has an endpoint not yet in the local catalogue.
 
-Ejemplo:
+Example:
 
 ```json
 {
@@ -193,7 +193,7 @@ Ejemplo:
 }
 ```
 
-Ejemplo con parametros de ruta:
+Example with path parameters:
 
 ```json
 {
@@ -205,21 +205,21 @@ Ejemplo con parametros de ruta:
 }
 ```
 
-## Llamadas libres
+## Free-form requests
 
-Las herramientas `*_request` reciben:
+The `*_request` tools accept:
 
-- `method`: `GET`, `POST`, `PUT`, `PATCH` o `DELETE`.
-- `path`: ruta relativa dentro del servicio, por ejemplo `/api/v1/entries`.
-- `query`: parametros opcionales.
-- `body`: cuerpo JSON opcional.
-- `headers`: headers adicionales opcionales, filtrados para no permitir reemplazar auth.
+- `method`: `GET`, `POST`, `PUT`, `PATCH`, or `DELETE`.
+- `path`: relative path within the service, e.g. `/api/v1/entries`.
+- `query`: optional query parameters.
+- `body`: optional JSON body.
+- `headers`: optional additional headers, filtered to prevent overriding auth headers.
 
-La respuesta devuelve status, headers utiles y cuerpo en texto o JSON.
+The response returns the status code, useful response headers, and the body as text or JSON.
 
-## Fuentes de API verificadas
+## Verified API sources
 
-El catalogo local se construyo desde la documentacion oficial revisada el 2026-05-13:
+The local catalogue was built from the official documentation reviewed on 2026-05-13:
 
 - Home Assistant REST API: https://developers.home-assistant.io/docs/api/rest/
 - Miniflux API: https://miniflux.app/docs/api.html
