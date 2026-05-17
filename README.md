@@ -221,6 +221,13 @@ The `*_request` tools accept:
 
 The response returns the status code, useful response headers, and the body as text or JSON.
 
+## Mirrors
+
+| Platform | URL |
+|----------|-----|
+| GitHub | https://github.com/vmhq/vmhq-mcp |
+| Radicle | [rad:zAW6yz62TaQrWzt992k2QVnxwKrG](https://radicle.network/nodes/rosa.radicle.xyz/rad%3AzAW6yz62TaQrWzt992k2QVnxwKrG) |
+
 ## Verified API sources
 
 The local catalogue was built from the official documentation reviewed on 2026-05-13:
