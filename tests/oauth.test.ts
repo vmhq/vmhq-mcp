@@ -45,6 +45,12 @@ function formRequest(url: string, fields: Record<string, string>): Request {
   });
 }
 
+function redirectUrlFromSuccessPage(html: string): string {
+  const match = html.match(/content="0;url=([^"]+)"/);
+  if (!match) throw new Error("success page missing redirect URL");
+  return match[1].replace(/&amp;/g, "&");
+}
+
 // Full authorize → token exchange flow
 async function fullFlow(opts: {
   redirectUri: string;
@@ -73,8 +79,8 @@ async function fullFlow(opts: {
     "server-secret",
     {},
   );
-  expect(authRes.status).toBe(303);
-  const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+  expect(authRes.status).toBe(200);
+  const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
   expect(code).toBeTruthy();
 
   const tokenFields: Record<string, string> = {
@@ -143,6 +149,20 @@ describe("client registration", () => {
       }),
     );
     expect(res.status).toBe(201);
+  });
+
+  test("expands legacy Claude web callback to canonical URI on registration", async () => {
+    const res = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://claude.ai/callback"], client_name: "Claude" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { redirect_uris: string[] };
+    expect(body.redirect_uris).toContain("https://claude.ai/callback");
+    expect(body.redirect_uris).toContain(oauth.CLAUDE_WEB_AUTH_CALLBACK);
   });
 
   test("responds with 201 and full client metadata", async () => {
@@ -301,7 +321,7 @@ describe("authorization code flow", () => {
       "server-secret",
       {},
     );
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
     const saved = JSON.parse(readFileSync(statePath, "utf-8")) as {
       authorizationCodes?: Array<[string, unknown]>;
     };
@@ -336,7 +356,7 @@ describe("authorization code flow", () => {
       "server-secret",
       {},
     );
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
     const baseFields = { grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier };
 
     await oauth.exchangeToken(formRequest("https://mcp.example.com/oauth/token", baseFields));
@@ -359,7 +379,7 @@ describe("authorization code flow", () => {
       "server-secret",
       {},
     );
-    const redirectUrl = new URL(authRes.headers.get("location")!);
+    const redirectUrl = new URL(redirectUrlFromSuccessPage(await authRes.text()));
     expect(redirectUrl.searchParams.get("state")).toBe("xyz123");
   });
 
@@ -378,7 +398,7 @@ describe("authorization code flow", () => {
       "server-secret",
       {},
     );
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
 
     const tokenRes = await oauth.exchangeToken(
       new Request("https://mcp.example.com/oauth/token", {
@@ -394,6 +414,42 @@ describe("authorization code flow", () => {
 });
 
 // ─── RFC 8252 §7.3 – loopback port-agnostic matching ─────────────────────────
+
+describe("Claude web redirect URI", () => {
+  test("success page redirects legacy claude.ai/callback to api/mcp/auth_callback", async () => {
+    const clientId = await register("https://claude.ai/callback");
+    const verifier = "claude-web-verifier";
+    const authRes = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "server-secret",
+        client_id: clientId,
+        redirect_uri: "https://claude.ai/callback",
+        code_challenge: s256(verifier),
+        code_challenge_method: "S256",
+        state: "claude-state",
+      }),
+      "server-secret",
+      {},
+    );
+    expect(authRes.status).toBe(200);
+    const redirectUrl = redirectUrlFromSuccessPage(await authRes.text());
+    expect(redirectUrl).toContain("https://claude.ai/api/mcp/auth_callback");
+    expect(redirectUrl).toContain("code=");
+    expect(redirectUrl).toContain("state=claude-state");
+
+    const code = new URL(redirectUrl).searchParams.get("code")!;
+    const tokenRes = await oauth.exchangeToken(
+      formRequest("https://mcp.example.com/oauth/token", {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: "https://claude.ai/callback",
+        client_id: clientId,
+        code_verifier: verifier,
+      }),
+    );
+    expect(tokenRes.status).toBe(200);
+  });
+});
 
 describe("RFC 8252 loopback port-agnostic redirect URI matching", () => {
   test("token exchange succeeds when port differs from registered URI (native app ephemeral port)", async () => {
@@ -418,8 +474,8 @@ describe("RFC 8252 loopback port-agnostic redirect URI matching", () => {
       "server-secret",
       {},
     );
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).not.toContain("error=");
+    expect(res.status).toBe(200);
+    expect(redirectUrlFromSuccessPage(await res.text())).toContain("code=");
   });
 
   test("non-loopback URIs still require exact match", async () => {
@@ -471,7 +527,7 @@ describe("RFC 8707 resource indicators", () => {
       "server-secret",
       {},
     );
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
 
     const tokenRes = await oauth.exchangeToken(
       formRequest("https://mcp.example.com/oauth/token", {
@@ -505,7 +561,7 @@ describe("RFC 8707 resource indicators", () => {
       "server-secret",
       {},
     );
-    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
     const tokenRes = await oauth.exchangeToken(
       formRequest("https://mcp.example.com/oauth/token", {
         grant_type: "authorization_code",

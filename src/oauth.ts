@@ -173,6 +173,30 @@ export const OAUTH_CORS_HEADERS = {
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+/** Claude.ai web connector callback (https://claude.com/docs/connectors/building/authentication). */
+export const CLAUDE_WEB_AUTH_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
+
+/** Legacy/wrong URIs some clients register; map to the canonical Claude web callback. */
+const REDIRECT_URI_ALIASES: Record<string, string> = {
+  "https://claude.ai/callback": CLAUDE_WEB_AUTH_CALLBACK,
+};
+
+export function canonicalRedirectUri(uri: string): string {
+  return REDIRECT_URI_ALIASES[uri] ?? uri;
+}
+
+function expandRedirectUris(uris: string[]): string[] {
+  const out = new Set<string>();
+  for (const uri of uris) {
+    out.add(uri);
+    out.add(canonicalRedirectUri(uri));
+    for (const [alias, target] of Object.entries(REDIRECT_URI_ALIASES)) {
+      if (uri === target) out.add(alias);
+    }
+  }
+  return [...out];
+}
+
 /**
  * Returns true if a redirect URI is allowed for registration.
  * Accepts: loopback http, private-use schemes (native apps), HTTPS.
@@ -202,6 +226,7 @@ function isRegistrableRedirectUri(uri: string): boolean {
  */
 function redirectUriMatches(requested: string, registered: string): boolean {
   if (requested === registered) return true;
+  if (canonicalRedirectUri(requested) === canonicalRedirectUri(registered)) return true;
   try {
     const req = new URL(requested);
     const reg = new URL(registered);
@@ -283,9 +308,11 @@ export async function registerClient(req: Request): Promise<Response> {
   let body: Record<string, unknown> = {};
   try { body = await req.json() as Record<string, unknown>; } catch { /* empty body */ }
 
-  const redirectUris = Array.isArray(body.redirect_uris)
-    ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string" && isRegistrableRedirectUri(u))
-    : [];
+  const redirectUris = expandRedirectUris(
+    Array.isArray(body.redirect_uris)
+      ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string" && isRegistrableRedirectUri(u))
+      : [],
+  );
 
   if (redirectUris.length === 0) {
     return Response.json({ error: "invalid_redirect_uris" }, { status: 400, headers: OAUTH_CORS_HEADERS });
@@ -390,6 +417,58 @@ function renderAuthorizeForm(p: {
   });
 }
 
+const SUCCESS_PAGE_CSP = {
+  "Content-Security-Policy":
+    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+} as const;
+
+function buildAuthorizationRedirectUrl(redirectUri: string, code: string, state: string): string {
+  const target = canonicalRedirectUri(redirectUri);
+  const redirect = new URL(target);
+  redirect.searchParams.set("code", code);
+  if (state) redirect.searchParams.set("state", state);
+  return redirect.toString();
+}
+
+/** HTML success page with auto-redirect (works better in OAuth popups than a bare 303). */
+function renderAuthorizeSuccess(redirectUrl: string): Response {
+  const href = escapeHtml(redirectUrl);
+  const jsUrl = JSON.stringify(redirectUrl);
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="0;url=${href}">
+  <title>Authorized — vmhq-mcp</title>
+  <style>
+    body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+    .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:2rem;width:100%;max-width:420px;text-align:center}
+    h1{margin:0 0 .5rem;font-size:1.25rem;color:#86efac}
+    p{margin:0 0 1.25rem;color:#888;font-size:.9rem;line-height:1.5}
+    a{color:#3b82f6;text-decoration:none;font-weight:500}
+    a:hover{text-decoration:underline}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Connected</h1>
+    <p>Authorization succeeded. Returning you to Claude…</p>
+    <p><a href="${href}">Continue to Claude</a> if you are not redirected automatically.</p>
+  </div>
+  <script>setTimeout(function(){window.location.replace(${jsUrl});},100);</script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8", ...SUCCESS_PAGE_CSP },
+  });
+}
+
 export function authorizeForm(req: Request, _config: OAuthConfig): Response {
   const url = new URL(req.url);
   const get = (k: string) => url.searchParams.get(k) ?? "";
@@ -472,12 +551,10 @@ export async function authorize(req: Request, serverToken: string, _config: OAut
   });
   saveState();
 
-  const redirect = new URL(redirectUri);
-  redirect.searchParams.set("code", code);
-  if (state) redirect.searchParams.set("state", state);
+  const redirectUrl = buildAuthorizationRedirectUrl(redirectUri, code, state);
 
-  log("info", "oauth_authorization_code_issued", { clientId });
-  return Response.redirect(redirect.toString(), 303);
+  log("info", "oauth_authorization_code_issued", { clientId, redirectHost: new URL(redirectUrl).host });
+  return renderAuthorizeSuccess(redirectUrl);
 }
 
 // ─── POST /oauth/token ────────────────────────────────────────────────────────
