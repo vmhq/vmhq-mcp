@@ -226,7 +226,7 @@ The response returns the status code, useful response headers, and the body as t
 | Platform | URL |
 |----------|-----|
 | GitHub | https://github.com/vmhq/vmhq-mcp |
-| Radicle | [rad:zAW6yz62TaQrWzt992k2QVnxwKrG](https://radicle.network/nodes/rosa.radicle.xyz/rad%3AzAW6yz62TaQrWzt992k2QVnxwKrG) |
+| Radicle | `rad:zAW6yz62TaQrWzt992k2QVnxwKrG` — [web UI](https://radicle.network/nodes/rosa.radicle.xyz/rad%3AzAW6yz62TaQrWzt992k2QVnxwKrG) |
 
 ## Verified API sources
 
