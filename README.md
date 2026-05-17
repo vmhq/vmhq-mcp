@@ -62,7 +62,7 @@ volumes:
   vmhq-mcp-data:
 ```
 
-The `vmhq-mcp-data` Docker volume persists OAuth state (registered clients and token hashes) across container restarts.
+The `vmhq-mcp-data` Docker volume persists OAuth state (registered clients, short-lived authorization codes, and token hashes) across container restarts.
 
 ## Example .env
 
@@ -158,7 +158,9 @@ https://mcp.example.com/mcp
 
 Leave the advanced OAuth Client ID and OAuth Client Secret fields empty. The server publishes OAuth metadata and supports public Dynamic Client Registration at `/oauth/register`, so Claude can register itself and obtain a token automatically before authorization.
 
-Do not paste `MCP_ACCESS_TOKEN` into Claude's OAuth fields. That token is still available for clients that support direct bearer tokens, such as `curl` testing or Codex-style configurations.
+In the browser authorization form, enter your server `MCP_ACCESS_TOKEN` (not an OAuth access token). If OAuth fails after a server reset or state wipe, remove the connector in Claude and add it again so it re-registers.
+
+Do not paste `MCP_ACCESS_TOKEN` into Claude's advanced OAuth Client ID/Secret fields. That token is still available for clients that support direct bearer tokens, such as `curl` testing or Codex-style configurations.
 
 ## MCP tools
 

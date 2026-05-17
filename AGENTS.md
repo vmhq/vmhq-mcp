@@ -32,9 +32,9 @@ Miniflux auth mode is controlled by `MINIFLUX_AUTH_MODE`:
 
 ## OAuth, rate limiting, and security headers
 
-`src/oauth.ts` implements OAuth metadata, public dynamic client registration (`/oauth/register`), authorization-code + PKCE exchange, token revocation, and protected-resource challenges. Client registrations and OAuth access token hashes are persisted to `MCP_OAUTH_STATE_PATH` (defaults to `./data/oauth-state.json`). Authorization codes are in-memory, short-lived, single-use, and pruned periodically. Stored OAuth access tokens are SHA-256 hashes; `isOAuthAccessToken()` hashes the presented token and checks expiry. Bearer token auth still compares directly against `MCP_ACCESS_TOKEN` for non-OAuth clients.
+`src/oauth.ts` implements OAuth metadata, public dynamic client registration (`/oauth/register`), authorization-code + PKCE exchange, token revocation, and protected-resource challenges. Client registrations, short-lived authorization codes (5 min TTL), and OAuth access token hashes are persisted to `MCP_OAUTH_STATE_PATH` (defaults to `./data/oauth-state.json`). Authorization codes are single-use and pruned periodically. Stored OAuth access tokens are SHA-256 hashes; `isOAuthAccessToken()` hashes the presented token and checks expiry. Bearer token auth still compares directly against `MCP_ACCESS_TOKEN` for non-OAuth clients.
 
-`src/rateLimit.ts` applies in-memory per-IP limits to OAuth endpoints and `/mcp`. `src/index.ts` wraps responses with security headers and exposes OAuth discovery endpoints in addition to `/health` and `/mcp`.
+`src/rateLimit.ts` applies in-memory per-IP limits to OAuth endpoints and `/mcp`, using `CF-Connecting-IP`, `X-Real-IP`, then `X-Forwarded-For`. `src/index.ts` wraps responses with security headers and exposes OAuth discovery endpoints in addition to `/health` and `/mcp`.
 
 ## Docker
 

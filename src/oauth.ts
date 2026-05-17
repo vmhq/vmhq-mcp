@@ -77,6 +77,7 @@ function loadState(): void {
     const raw = readFileSync(STATE_PATH, "utf-8");
     const saved = JSON.parse(raw) as {
       clients?: Array<[string, RegisteredClient]>;
+      authorizationCodes?: Array<[string, AuthorizationCode]>;
       accessTokens?: Array<[string, StoredToken | number]>;
     };
 
@@ -85,6 +86,12 @@ function loadState(): void {
     }
 
     const now = Date.now();
+    if (Array.isArray(saved.authorizationCodes)) {
+      for (const [code, ac] of saved.authorizationCodes) {
+        if (ac.expiresAt > now) codes.set(code, ac);
+      }
+    }
+
     if (Array.isArray(saved.accessTokens)) {
       for (const [hash, data] of saved.accessTokens) {
         // Backwards-compat: old format stored just a number (expiresAt)
@@ -107,6 +114,7 @@ function saveState(): void {
     mkdirSync(dirname(STATE_PATH), { recursive: true });
     const payload = {
       clients: [...clients.entries()],
+      authorizationCodes: [...codes.entries()],
       accessTokens: [...accessTokens.entries()],
     };
     const tmp = `${STATE_PATH}.tmp`;
@@ -130,6 +138,14 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   }
 
   if (dirty) saveState();
+}
+
+/** Reload clients, authorization codes, and tokens from disk (for tests and hot recovery). */
+export function reloadPersistedOAuthState(): void {
+  clients.clear();
+  codes.clear();
+  accessTokens.clear();
+  loadState();
 }
 
 loadState();
@@ -454,6 +470,7 @@ export async function authorize(req: Request, serverToken: string, _config: OAut
     resource: resource || undefined,
     expiresAt: Date.now() + CODE_TTL_MS,
   });
+  saveState();
 
   const redirect = new URL(redirectUri);
   redirect.searchParams.set("code", code);
@@ -482,7 +499,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
 
   const ac = codes.get(code);
   // Single-use: delete immediately (even on failure)
-  codes.delete(code);
+  if (codes.delete(code)) saveState();
 
   if (!ac) {
     return Response.json({ error: "invalid_grant" }, { status: 400, headers: OAUTH_CORS_HEADERS });

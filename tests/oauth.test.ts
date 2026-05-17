@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 type OAuthModule = typeof import("../src/oauth.js");
@@ -284,6 +284,41 @@ describe("authorization code flow", () => {
     expect(info?.clientId).toBe(clientId);
     expect(info?.scopes).toContain("mcp");
     expect(info?.token).toBe(access_token);
+  });
+
+  test("authorization code survives reload from disk (container restart)", async () => {
+    const redirectUri = "https://persist.example.com/cb";
+    const clientId = await register(redirectUri);
+    const verifier = "persist-verifier-restart";
+    const authRes = await oauth.authorize(
+      formRequest("https://mcp.example.com/oauth/authorize", {
+        token: "server-secret",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256(verifier),
+        code_challenge_method: "S256",
+      }),
+      "server-secret",
+      {},
+    );
+    const code = new URL(authRes.headers.get("location")!).searchParams.get("code")!;
+    const saved = JSON.parse(readFileSync(statePath, "utf-8")) as {
+      authorizationCodes?: Array<[string, unknown]>;
+    };
+    expect(saved.authorizationCodes?.some(([c]) => c === code)).toBe(true);
+
+    oauth.reloadPersistedOAuthState();
+
+    const tokenRes = await oauth.exchangeToken(
+      formRequest("https://mcp.example.com/oauth/token", {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        code_verifier: verifier,
+      }),
+    );
+    expect(tokenRes.status).toBe(200);
   });
 
   test("authorization code is single-use", async () => {

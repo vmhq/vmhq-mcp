@@ -15,7 +15,17 @@ import {
   unauthorized,
   verifyAccessToken,
 } from "./oauth.js";
-import { checkRateLimit } from "./rateLimit.js";
+import { checkRateLimit, rateLimitRetryAfterSec } from "./rateLimit.js";
+
+function rateLimited(req: Request, bucket: string): Response {
+  return json(
+    { error: "rate_limited" },
+    {
+      status: 429,
+      headers: { "Retry-After": String(rateLimitRetryAfterSec(req, bucket)) },
+    },
+  );
+}
 
 const config = loadConfig();
 const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl };
@@ -102,7 +112,7 @@ const httpServer = Bun.serve({
 
     if (url.pathname === "/oauth/register" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_register")) {
-        return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
+        return secureResponse(rateLimited(req, "oauth_register"));
       }
       return secureResponse(await registerClient(req));
     }
@@ -113,21 +123,21 @@ const httpServer = Bun.serve({
 
     if (url.pathname === "/oauth/authorize" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_authorize")) {
-        return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
+        return secureResponse(rateLimited(req, "oauth_authorize"));
       }
       return secureResponse(await authorize(req, config.accessToken, oauthConfig));
     }
 
     if (url.pathname === "/oauth/token" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_token")) {
-        return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
+        return secureResponse(rateLimited(req, "oauth_token"));
       }
       return secureResponse(await exchangeToken(req));
     }
 
     if (url.pathname === "/oauth/revoke" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_revoke")) {
-        return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
+        return secureResponse(rateLimited(req, "oauth_revoke"));
       }
       return secureResponse(await revokeToken(req));
     }
@@ -148,7 +158,7 @@ const httpServer = Bun.serve({
     }
 
     if (!checkRateLimit(req, "mcp")) {
-      return secureResponse(json({ error: "rate_limited" }, { status: 429 }));
+      return secureResponse(rateLimited(req, "mcp"));
     }
 
     const token = bearerToken(req);
