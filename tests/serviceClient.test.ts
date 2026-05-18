@@ -132,6 +132,47 @@ describe("callService multipart", () => {
 
     expect(receivedTags).toEqual(["1", "3", "7"]);
   });
+
+  test("sends internal byte file fields as multipart files", async () => {
+    let receivedFileText: string | undefined;
+    let receivedFileType: string | undefined;
+
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const form = await req.formData();
+        const file = form.get("document");
+        if (file instanceof File) {
+          receivedFileText = await file.text();
+          receivedFileType = file.type;
+        }
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    await callService(
+      service,
+      {
+        method: "POST",
+        path: "/documents/post_document/",
+        body: {
+          _multipart: true,
+          document: {
+            _bytes: Buffer.from(`%PDF-1.4\nbytes`),
+            filename: "bytes.pdf",
+            contentType: "application/pdf",
+          },
+        },
+      },
+      { timeoutMs: 2_000 },
+    );
+
+    expect(receivedFileText).toStartWith("%PDF-1.4");
+    expect(receivedFileText).toContain("bytes");
+    expect(receivedFileType).toBe("application/pdf");
+  });
 });
 
 describe("callService", () => {

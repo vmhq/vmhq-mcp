@@ -188,12 +188,22 @@ async function parseBody(response: Response): Promise<unknown> {
 }
 
 type MultipartScalar = string | number | boolean;
-type MultipartFileField = { _base64: string; filename: string; contentType?: string };
+type MultipartBase64FileField = { _base64: string; filename: string; contentType?: string };
+type MultipartBytesFileField = { _bytes: Uint8Array; filename: string; contentType?: string };
+type MultipartFileField = MultipartBase64FileField | MultipartBytesFileField;
 type MultipartField = MultipartScalar | MultipartScalar[] | MultipartFileField;
 type MultipartBody = { _multipart: true } & Record<string, MultipartField | true>;
 
 function isFileField(value: unknown): value is MultipartFileField {
-  return value !== null && typeof value === "object" && "_base64" in value && "filename" in value;
+  return value !== null && typeof value === "object" && "filename" in value && ("_base64" in value || "_bytes" in value);
+}
+
+function fileFieldBytes(value: MultipartFileField): Buffer {
+  if ("_bytes" in value) {
+    return Buffer.from(value._bytes);
+  }
+
+  return Buffer.from(value._base64, "base64");
 }
 
 export function isMultipartBody(body: unknown): body is MultipartBody {
@@ -207,8 +217,9 @@ function buildFormData(body: MultipartBody): FormData {
     if (key === "_multipart") continue;
 
     if (isFileField(value)) {
-      const bytes = Buffer.from(value._base64, "base64");
-      const blob = new Blob([bytes], { type: value.contentType ?? "application/octet-stream" });
+      const bytes = fileFieldBytes(value);
+      const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const blob = new Blob([arrayBuffer], { type: value.contentType ?? "application/octet-stream" });
       fd.append(key, blob, value.filename);
     } else if (Array.isArray(value)) {
       for (const item of value) {

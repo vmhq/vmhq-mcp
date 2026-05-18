@@ -292,7 +292,8 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     pagination: "List endpoints use page and page_size query parameters. Response includes count, next, and previous.",
     notes: [
       "All API paths are rooted at /api/.",
-      "Document upload via POST /api/documents/post_document/ uses multipart/form-data. Pass body with _multipart: true and a document field as { _base64: '<base64>', filename: 'file.pdf', contentType: 'application/pdf' }. String/number fields (title, correspondent, document_type, storage_path) and arrays (tags) are included directly.",
+      "Small document upload via POST /api/documents/post_document/ uses multipart/form-data. Pass body with _multipart: true and a document field as { _base64: '<real base64 bytes>', filename: 'file.pdf', contentType: 'application/pdf' }. Do not pass file:// URLs or local paths in _base64.",
+      "Large document upload should use the dedicated chunked tools: paperless_upload_start, paperless_upload_chunk, paperless_upload_finish, and paperless_upload_abort. The finish tool reassembles real base64 chunks, validates PDFs, and sends multipart/form-data to Paperless.",
       "Bulk edit operations (bulk_edit, bulk_download, set_storage_path, add_tag, remove_tag, etc.) accept a list of document IDs plus an operation name.",
       "Filtering documents supports many query parameters; combine correspondent__id, document_type__id, tags__id__all, tags__id__in, and full-text query for precise lookups.",
     ],

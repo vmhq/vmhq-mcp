@@ -181,6 +181,7 @@ For each service:
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `nextdns_api_reference`, `nextdns_operation`, `nextdns_request`
 - `paperless_api_reference`, `paperless_operation`, `paperless_request`
+- `paperless_upload_start`, `paperless_upload_chunk`, `paperless_upload_finish`, `paperless_upload_abort` for chunked Paperless document uploads
 
 Recommended agent workflow:
 
@@ -224,6 +225,31 @@ The `*_request` tools accept:
 - `headers`: optional additional headers, filtered to prevent overriding auth headers.
 
 The response returns the status code, useful response headers, and the body as text or JSON.
+
+### Paperless document uploads
+
+For small files, `paperless_operation(operationId="post_document")` and `paperless_request` support multipart bodies with a real base64 payload:
+
+```json
+{
+  "_multipart": true,
+  "title": "Document title",
+  "document": {
+    "_base64": "<real base64 bytes, not a path>",
+    "filename": "document.pdf",
+    "contentType": "application/pdf"
+  }
+}
+```
+
+For larger files, use the chunked upload tools:
+
+1. `paperless_upload_start` with filename, optional metadata, and expected size/length.
+2. `paperless_upload_chunk` repeatedly with zero-based base64 chunks.
+3. `paperless_upload_finish` to validate, assemble, and send the PDF to Paperless.
+4. `paperless_upload_abort` to discard a pending upload.
+
+`_base64` and `chunkBase64` must contain real base64 data. Do not pass local paths or `file://` URLs.
 
 ## Mirrors
 
