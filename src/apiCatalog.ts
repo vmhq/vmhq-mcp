@@ -292,7 +292,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
     pagination: "List endpoints use page and page_size query parameters. Response includes count, next, and previous.",
     notes: [
       "All API paths are rooted at /api/.",
-      "Document upload via POST /api/documents/post_document/ accepts multipart/form-data; prefer paperless_request for file uploads.",
+      "Document upload via POST /api/documents/post_document/ uses multipart/form-data. Pass body with _multipart: true and a document field as { _base64: '<base64>', filename: 'file.pdf', contentType: 'application/pdf' }. String/number fields (title, correspondent, document_type, storage_path) and arrays (tags) are included directly.",
       "Bulk edit operations (bulk_edit, bulk_download, set_storage_path, add_tag, remove_tag, etc.) accept a list of document IDs plus an operation name.",
       "Filtering documents supports many query parameters; combine correspondent__id, document_type__id, tags__id__all, tags__id__in, and full-text query for precise lookups.",
     ],
@@ -305,7 +305,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       { operationId: "get_document_metadata", method: "GET", path: "/api/documents/{id}/metadata/", group: "documents", summary: "Get document metadata including original file info and archive checksum." },
       { operationId: "get_document_suggestions", method: "GET", path: "/api/documents/{id}/suggestions/", group: "documents", summary: "Get suggested correspondent, tags, document type and dates for a document." },
       { operationId: "bulk_edit_documents", method: "POST", path: "/api/documents/bulk_edit/", group: "documents", summary: "Apply an operation (set_correspondent, set_document_type, add_tag, remove_tag, delete, set_storage_path, etc.) to multiple documents.", body: "{ documents: number[], method: string, parameters?: object }", destructive: true },
-      { operationId: "post_document", method: "POST", path: "/api/documents/post_document/", group: "documents", summary: "Upload a new document as multipart/form-data. Use paperless_request for file uploads.", body: "multipart/form-data with document file and optional title, correspondent_id, document_type_id, tag_ids, created.", destructive: true },
+      { operationId: "post_document", method: "POST", path: "/api/documents/post_document/", group: "documents", summary: "Upload a new document via multipart/form-data.", body: "{ _multipart: true, document: { _base64, filename, contentType }, title?, correspondent?, document_type?, tags?: string[], storage_path?, created? }", destructive: true },
       { operationId: "search_autocomplete", method: "GET", path: "/api/search/autocomplete/", group: "search", summary: "Return autocomplete suggestions for a search term.", query: ["term", "limit"] },
       { operationId: "list_correspondents", method: "GET", path: "/api/correspondents/", group: "correspondents", summary: "List correspondents.", query: ["page", "page_size", "ordering", "name__icontains"] },
       { operationId: "create_correspondent", method: "POST", path: "/api/correspondents/", group: "correspondents", summary: "Create a correspondent.", body: "{ name: string, match?: string, matching_algorithm?: number, is_insensitive?: boolean }", destructive: true },

@@ -187,6 +187,41 @@ async function parseBody(response: Response): Promise<unknown> {
   return text;
 }
 
+type MultipartScalar = string | number | boolean;
+type MultipartFileField = { _base64: string; filename: string; contentType?: string };
+type MultipartField = MultipartScalar | MultipartScalar[] | MultipartFileField;
+type MultipartBody = { _multipart: true } & Record<string, MultipartField | true>;
+
+function isFileField(value: unknown): value is MultipartFileField {
+  return value !== null && typeof value === "object" && "_base64" in value && "filename" in value;
+}
+
+export function isMultipartBody(body: unknown): body is MultipartBody {
+  return body !== null && typeof body === "object" && "_multipart" in body && (body as Record<string, unknown>)["_multipart"] === true;
+}
+
+function buildFormData(body: MultipartBody): FormData {
+  const fd = new FormData();
+
+  for (const [key, value] of Object.entries(body)) {
+    if (key === "_multipart") continue;
+
+    if (isFileField(value)) {
+      const bytes = Buffer.from(value._base64, "base64");
+      const blob = new Blob([bytes], { type: value.contentType ?? "application/octet-stream" });
+      fd.append(key, blob, value.filename);
+    } else if (Array.isArray(value)) {
+      for (const item of value) {
+        fd.append(key, String(item));
+      }
+    } else {
+      fd.append(key, String(value));
+    }
+  }
+
+  return fd;
+}
+
 export type CallServiceOptions = {
   timeoutMs?: number;
   operationId?: string;
@@ -220,8 +255,12 @@ export async function callService(
   let body: BodyInit | undefined;
 
   if (input.body !== undefined && input.method !== "GET") {
-    body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
-    headers["Content-Type"] ??= "application/json";
+    if (isMultipartBody(input.body)) {
+      body = buildFormData(input.body);
+    } else {
+      body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
+      headers["Content-Type"] ??= "application/json";
+    }
   }
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;

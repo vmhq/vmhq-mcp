@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { buildUrl, callService, interpolatePath } from "../src/serviceClient.js";
+import { buildUrl, callService, interpolatePath, isMultipartBody } from "../src/serviceClient.js";
 import type { ServiceDefinition } from "../src/services.js";
 
 process.env.MCP_LOG_LEVEL = "silent";
@@ -38,6 +38,99 @@ describe("buildUrl", () => {
 
   test("rejects absolute paths", () => {
     expect(() => buildUrl(baseService, { method: "GET", path: "https://evil.test/" })).toThrow("Absolute URLs are not allowed");
+  });
+});
+
+describe("isMultipartBody", () => {
+  test("returns true for bodies with _multipart: true", () => {
+    expect(isMultipartBody({ _multipart: true, title: "doc" })).toBe(true);
+  });
+
+  test("returns false for plain JSON bodies", () => {
+    expect(isMultipartBody({ title: "doc" })).toBe(false);
+  });
+
+  test("returns false for non-objects", () => {
+    expect(isMultipartBody(null)).toBe(false);
+    expect(isMultipartBody("string")).toBe(false);
+    expect(isMultipartBody(undefined)).toBe(false);
+  });
+});
+
+describe("callService multipart", () => {
+  test("sends FormData when body has _multipart: true", async () => {
+    let receivedContentType: string | null = null;
+    let receivedTitle: string | undefined;
+    let receivedFileText: string | undefined;
+    let receivedFilename: string | undefined;
+
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        receivedContentType = req.headers.get("content-type");
+        const form = await req.formData();
+        receivedTitle = form.get("title")?.toString();
+        const file = form.get("document");
+        if (file instanceof File) {
+          receivedFilename = file.name;
+          receivedFileText = await file.text();
+        }
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    const result = await callService(
+      service,
+      {
+        method: "POST",
+        path: "/documents/post_document/",
+        body: {
+          _multipart: true,
+          title: "Factura Mayo",
+          document: {
+            _base64: Buffer.from("hello pdf").toString("base64"),
+            filename: "factura.pdf",
+            contentType: "application/pdf",
+          },
+        },
+      },
+      { timeoutMs: 2_000 },
+    );
+
+    expect(receivedContentType).toMatch(/multipart\/form-data/);
+    expect(receivedTitle).toBe("Factura Mayo");
+    expect(receivedFilename).toBe("factura.pdf");
+    expect(receivedFileText).toBe("hello pdf");
+    expect(result).toMatchObject({ response: { ok: true, status: 200 } });
+  });
+
+  test("sends scalar arrays as repeated form fields", async () => {
+    let receivedTags: string[] = [];
+
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const form = await req.formData();
+        receivedTags = form.getAll("tags") as string[];
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    await callService(
+      service,
+      {
+        method: "POST",
+        path: "/documents/post_document/",
+        body: { _multipart: true, tags: ["1", "3", "7"] },
+      },
+      { timeoutMs: 2_000 },
+    );
+
+    expect(receivedTags).toEqual(["1", "3", "7"]);
   });
 });
 
