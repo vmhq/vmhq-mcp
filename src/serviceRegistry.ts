@@ -95,6 +95,13 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
       return profileId ? { profileId } : undefined;
     },
   },
+  {
+    id: "paperless",
+    title: "Paperless-ngx",
+    baseUrlEnv: "PAPERLESS_BASE_URL",
+    auth: { type: "prefixed", tokenEnv: "PAPERLESS_TOKEN", prefix: "Token " },
+    defaultPathPrefix: "/api",
+  },
 ];
 
 export function serviceFromRegistryEntry(
