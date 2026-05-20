@@ -287,8 +287,13 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
             const res = result as Record<string, unknown>;
             if (res.error) {
               const err = res.error as Record<string, unknown>;
-              const isTimeout = err.type === "upstream_timeout";
-              return [service.id, { status: isTimeout ? "timeout" : "error", durationMs }] as const;
+              if (err.type === "upstream_timeout") {
+                return [service.id, { status: "timeout", durationMs }] as const;
+              }
+              // upstream_network_error = unreachable; upstream_error = HTTP non-2xx (fall through)
+              if (err.type !== "upstream_error") {
+                return [service.id, { status: "error", durationMs }] as const;
+              }
             }
             const resp = (res.response ?? {}) as Record<string, unknown>;
             return [service.id, { status: resp.ok ? "ok" : "error", httpStatus: resp.status, durationMs }] as const;
