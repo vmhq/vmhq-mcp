@@ -91,7 +91,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "MEMOS_BASE_URL",
     auth: bearerAuth("MEMOS_TOKEN"),
     defaultPathPrefix: "/api/v1",
-    pingPath: "/api/v1/users/me",
+    pingPath: "/api/v1/instance/profile",
   },
   {
     id: "nextdns",
