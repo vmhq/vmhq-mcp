@@ -22,6 +22,8 @@ export type ServiceDefinition = {
   auth: ServiceAuth;
   defaultPathPrefix: string;
   defaultPathParams?: Record<string, string>;
+  timeoutMs?: number;
+  pingPath?: string;
 };
 
 export const SERVICE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;

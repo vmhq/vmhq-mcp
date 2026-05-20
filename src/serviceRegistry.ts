@@ -9,6 +9,8 @@ export type ServiceRegistryEntry = {
   enabledWhenEnv?: string;
   auth: ServiceAuth | ((readEnv: (name: string, fallback?: string) => string) => ServiceAuth);
   defaultPathParams?: (readEnv: (name: string, fallback?: string) => string) => Record<string, string> | undefined;
+  timeoutMs?: number;
+  pingPath?: string;
 };
 
 function bearerAuth(tokenEnv: string): ServiceAuth {
@@ -48,6 +50,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "HOME_ASSISTANT_BASE_URL",
     auth: bearerAuth("HOME_ASSISTANT_TOKEN"),
     defaultPathPrefix: "/api",
+    pingPath: "/api/",
   },
   {
     id: "miniflux",
@@ -55,6 +58,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "MINIFLUX_BASE_URL",
     auth: minifluxAuth,
     defaultPathPrefix: "/v1",
+    pingPath: "/v1/me",
   },
   {
     id: "karakeep",
@@ -62,6 +66,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "KARAKEEP_BASE_URL",
     auth: bearerAuth("KARAKEEP_TOKEN"),
     defaultPathPrefix: "/api/v1",
+    pingPath: "/api/v1/lists",
   },
   {
     id: "searxng",
@@ -69,6 +74,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "SEARXNG_BASE_URL",
     auth: { type: "none" },
     defaultPathPrefix: "/",
+    pingPath: "/",
   },
   {
     id: "proxmox",
@@ -76,6 +82,8 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "PROXMOX_BASE_URL",
     auth: proxmoxAuth,
     defaultPathPrefix: "/api2/json",
+    timeoutMs: 120_000,
+    pingPath: "/api2/json/version",
   },
   {
     id: "memos",
@@ -83,6 +91,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "MEMOS_BASE_URL",
     auth: bearerAuth("MEMOS_TOKEN"),
     defaultPathPrefix: "/api/v1",
+    pingPath: "/api/v1/auth/status",
   },
   {
     id: "nextdns",
@@ -94,6 +103,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
       const profileId = readEnv("NEXTDNS_PROFILE_ID");
       return profileId ? { profileId } : undefined;
     },
+    pingPath: "/profiles",
   },
   {
     id: "paperless",
@@ -101,6 +111,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     baseUrlEnv: "PAPERLESS_BASE_URL",
     auth: { type: "prefixed", tokenEnv: "PAPERLESS_TOKEN", prefix: "Token " },
     defaultPathPrefix: "/api",
+    pingPath: "/api/",
   },
 ];
 
@@ -126,5 +137,7 @@ export function serviceFromRegistryEntry(
     auth,
     defaultPathPrefix: entry.defaultPathPrefix,
     defaultPathParams: entry.defaultPathParams?.(readEnv),
+    timeoutMs: entry.timeoutMs,
+    pingPath: entry.pingPath,
   };
 }

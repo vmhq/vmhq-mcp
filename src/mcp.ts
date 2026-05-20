@@ -137,7 +137,7 @@ function uploadErrorText(message: string): string {
   return responseText({ error: { type: "invalid_upload", service: "paperless", message, retryable: false } });
 }
 
-function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number): void {
+function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
   server.tool(
     "paperless_upload_start",
     "Start a chunked Paperless document upload. Use this for PDFs too large to pass as one _base64 value.",
@@ -220,7 +220,7 @@ function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinit
               },
             },
           },
-          { timeoutMs: upstreamTimeoutMs, operationId: "paperless_upload_finish" },
+          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "paperless_upload_finish", requestId },
         );
 
         return { content: [{ type: "text", text: responseText({ uploadId: input.uploadId, result }) }] };
@@ -245,7 +245,7 @@ function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinit
   );
 }
 
-export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000): McpServer {
+export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, requestId?: string): McpServer {
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
@@ -260,11 +260,42 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
   server.tool(
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
-    {},
+    {
+      ping: z.boolean().optional().describe("If true, attempt a lightweight GET to each enabled service to verify it is reachable. Uses a 3 s timeout regardless of the service timeout setting."),
+    },
     { title: "VMHQ Status" },
-    async () => {
+    async ({ ping }: { ping?: boolean }) => {
+      const PING_TIMEOUT_MS = 3_000;
       const enabled = services.map((service) => service.id);
       const disabled = (Object.keys(API_CATALOGS) as ServiceId[]).filter((serviceId) => !enabled.includes(serviceId));
+
+      let pingResults: Record<string, unknown> | undefined;
+
+      if (ping) {
+        const entries = await Promise.all(
+          services.map(async (service) => {
+            if (!service.pingPath) {
+              return [service.id, { status: "skipped", reason: "no_ping_path" }] as const;
+            }
+            const start = performance.now();
+            const result = await callService(
+              service,
+              { method: "GET", path: service.pingPath },
+              { timeoutMs: PING_TIMEOUT_MS, operationId: "ping", requestId },
+            );
+            const durationMs = Math.round(performance.now() - start);
+            const res = result as Record<string, unknown>;
+            if (res.error) {
+              const err = res.error as Record<string, unknown>;
+              const isTimeout = err.type === "upstream_timeout";
+              return [service.id, { status: isTimeout ? "timeout" : "error", durationMs }] as const;
+            }
+            const resp = (res.response ?? {}) as Record<string, unknown>;
+            return [service.id, { status: resp.ok ? "ok" : "error", httpStatus: resp.status, durationMs }] as const;
+          }),
+        );
+        pingResults = Object.fromEntries(entries);
+      }
 
       return {
         content: [
@@ -274,6 +305,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
               status: "ok",
               enabledServices: enabled,
               disabledServices: disabled,
+              ...(pingResults ? { ping: pingResults } : {}),
               iconUrl,
             }),
           },
@@ -345,7 +377,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
             maxLength: input.maxLength,
             domain: input.domain,
           },
-          { timeoutMs: upstreamTimeoutMs, operationId: endpoint.operationId },
+          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, requestId },
         );
 
         return {
@@ -368,7 +400,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
       serviceRequestSchema,
       { title: `${service.title} Request` },
       async (input: ServiceRequestInput) => {
-        const result = await callService(service, input, { timeoutMs: upstreamTimeoutMs });
+        const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, requestId });
 
         return {
           content: [
@@ -382,7 +414,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
     );
 
     if (service.id === "paperless") {
-      registerPaperlessUploadTools(server, service, upstreamTimeoutMs);
+      registerPaperlessUploadTools(server, service, upstreamTimeoutMs, requestId);
     }
   }
 

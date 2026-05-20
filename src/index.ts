@@ -52,8 +52,8 @@ function secureResponse(resp: Response): Response {
   return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
 
-async function handleMcp(req: Request, token: string): Promise<Response> {
-  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs);
+async function handleMcp(req: Request, token: string, requestId: string): Promise<Response> {
+  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, requestId);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
@@ -73,10 +73,12 @@ const httpServer = Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     const startedAt = performance.now();
+    const requestId = crypto.randomUUID().slice(0, 8);
 
     log("debug", "http_request_started", {
       method: req.method,
       path: url.pathname,
+      requestId,
     });
 
     if (url.pathname === "/health") {
@@ -169,12 +171,13 @@ const httpServer = Bun.serve({
       return unauthorized(oauthConfig, req);
     }
 
-    const response = await handleMcp(req, isOauth ? token : "");
+    const response = await handleMcp(req, isOauth ? token : "", requestId);
     log("info", "mcp_request_finished", {
       method: req.method,
       path: url.pathname,
       status: response.status,
       durationMs: Math.round(performance.now() - startedAt),
+      requestId,
     });
     return secureResponse(response);
   },

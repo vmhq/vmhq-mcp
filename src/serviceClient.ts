@@ -236,6 +236,7 @@ function buildFormData(body: MultipartBody): FormData {
 export type CallServiceOptions = {
   timeoutMs?: number;
   operationId?: string;
+  requestId?: string;
 };
 
 export async function callService(
@@ -281,6 +282,7 @@ export async function callService(
   log("info", "upstream_request_started", {
     service: service.id,
     operationId: options.operationId,
+    requestId: options.requestId,
     method: input.method,
     path: url.pathname,
   });
@@ -307,6 +309,7 @@ export async function callService(
     log(response.ok ? "info" : "error", "upstream_request_finished", {
       service: service.id,
       operationId: options.operationId,
+      requestId: options.requestId,
       method: input.method,
       path: url.pathname,
       status: response.status,
@@ -343,6 +346,7 @@ export async function callService(
     log("error", "upstream_request_failed", {
       service: service.id,
       operationId: options.operationId,
+      requestId: options.requestId,
       method: input.method,
       path: url.pathname,
       durationMs,
