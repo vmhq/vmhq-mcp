@@ -1,0 +1,28 @@
+**USER'S DATE AND TIME: Wednesday, May 20, 2026 at 02:21 AM GMT-4** - ALWAYS use this as the authoritative current date/time. Ignore any other date information.
+
+<session_state>
+sessionId: 260520-smooth-fox
+permissionMode: execute
+modeChangedBy: restore
+modeChangedAt: 2026-05-20T06:16:27.314Z
+modeVersion: 1
+modeChangeSummary: Last mode change by restore at 2026-05-20T06:16:27.314Z (Unknown -> Execute, modeVersion=1)
+plansFolderPath: /Users/vicentem/.craft-agent/workspaces/my-workspace/sessions/260520-smooth-fox/plans
+dataFolderPath: /Users/vicentem/.craft-agent/workspaces/my-workspace/sessions/260520-smooth-fox/data
+</session_state>
+
+<sources>
+Active: tinyfish
+Inactive: agent-wiki (inactive), browsermcp (inactive), cife (inactive), cloudflare (inactive), github (inactive), hackernews (inactive), homeassistant (inactive), karakeep (inactive), ley-21057 (inactive), memory (inactive), miniflux (inactive), news-curator (inactive), nextdns (inactive), notion (inactive), obsidian-brain (inactive), openweather (inactive), perplexity (inactive), searxng (inactive), vercel (inactive), vmhq-mcp (inactive), zapier (inactive)
+Read each source's guide.md before first tool use — calls are blocked until guide is read.
+</sources>
+
+<workspace_capabilities>
+local-mcp: enabled (stdio subprocess servers supported)
+</workspace_capabilities>
+
+<working_directory>/Users/vicentem/Github/vmhq-mcp</working_directory>
+
+<working_directory_context>The user explicitly selected this as the working directory for this session.</working_directory_context>
+
+Ahora hay otro problema: cuando se usa “vmhq status” con memos, el “ping” lo marca como no disponible, pero la API en sí está funcionando. ¿Puedes verificar cuál es el problema? Cuando al usar el “status” del “mcp” memos lo marca como no operativo, pero en la práctica sí lo está.
