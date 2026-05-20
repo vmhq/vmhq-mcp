@@ -2,6 +2,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp.js";
 import { loadConfig } from "./config.js";
 import { log } from "./logger.js";
+import { generateOpenApiSpec, renderSwaggerUI } from "./openapi.js";
 import {
   authorizationServerMetadata,
   authorize,
@@ -88,6 +89,22 @@ const httpServer = Bun.serve({
         mcpUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp` : undefined,
         iconUrl: config.iconUrl,
       }));
+    }
+
+    if (url.pathname === "/openapi.json") {
+      const spec = generateOpenApiSpec(config.services, config.publicUrl);
+      return secureResponse(Response.json(spec));
+    }
+
+    if (url.pathname === "/docs") {
+      const openapiUrl = config.publicUrl
+        ? `${config.publicUrl.replace(/\/$/, "")}/openapi.json`
+        : `${new URL(req.url).origin}/openapi.json`;
+      return secureResponse(
+        new Response(renderSwaggerUI(openapiUrl), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+      );
     }
 
     // CORS preflight for OAuth and discovery endpoints
