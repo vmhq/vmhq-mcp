@@ -69,6 +69,8 @@ async function handleMcp(req: Request, token: string, requestId: string): Promis
   }
 }
 
+const AUTHENTICATED_PATHS = new Set(["/mcp", "/openapi.json", "/docs"]);
+
 const httpServer = Bun.serve({
   port: config.port,
   async fetch(req) {
@@ -145,7 +147,6 @@ const httpServer = Bun.serve({
       return secureResponse(await revokeToken(req));
     }
 
-    const AUTHENTICATED_PATHS = new Set(["/mcp", "/openapi.json", "/docs"]);
     if (!AUTHENTICATED_PATHS.has(url.pathname)) {
       return secureResponse(json({ error: "not_found" }, { status: 404 }));
     }

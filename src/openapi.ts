@@ -2,8 +2,6 @@ import { API_CATALOGS } from "./apiCatalog.js";
 import type { ServiceDefinition } from "./services.js";
 
 export function generateOpenApiSpec(services: ServiceDefinition[], publicUrl?: string) {
-  const enabledServiceIds = new Set(services.map((s) => s.id));
-
   const paths: Record<string, any> = {};
   const tags: Array<{ name: string; description: string }> = [];
 
