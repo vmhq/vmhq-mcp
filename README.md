@@ -37,6 +37,11 @@ The MCP endpoint is available at:
 http://localhost:3010/mcp
 ```
 
+The server also exposes an OpenAPI 3.0.3 specification and an interactive Swagger UI for discovering the available tools and endpoints. These endpoints are protected by the same `MCP_ACCESS_TOKEN` (Bearer auth) as the main `/mcp` endpoint:
+
+- `GET /openapi.json` — Live OpenAPI specification scoped to currently configured services.
+- `GET /docs` — Interactive Swagger UI.
+
 ## Docker Compose
 
 ```bash

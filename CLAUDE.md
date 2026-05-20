@@ -26,7 +26,7 @@ HTTP client → /mcp → rate limit → Bearer or OAuth token check → McpServe
 
 The HTTP server also exposes `/health`, OAuth discovery metadata, dynamic client registration, authorization, token exchange, and token revocation endpoints.
 
-- `index.ts` — Bun HTTP server. Routes `/health`, OAuth metadata/endpoints, and `/mcp`. Every `/mcp` request creates a fresh `McpServer` + transport pair. Bearer auth (`MCP_ACCESS_TOKEN`) or a valid OAuth access token is enforced before handing off to MCP. Responses are wrapped with common security headers.
+- `index.ts` — Bun HTTP server. Routes `/health`, OAuth metadata/endpoints, `/mcp`, and OpenAPI endpoints (`/openapi.json`, `/docs`). Every `/mcp` request creates a fresh `McpServer` + transport pair. Bearer auth (`MCP_ACCESS_TOKEN`) or a valid OAuth access token is enforced for `/mcp`, `/openapi.json`, and `/docs`. Responses are wrapped with common security headers.
 - `oauth.ts` — OAuth protected-resource and authorization-server metadata, public dynamic client registration (`/oauth/register`), authorization-code + PKCE flow, token revocation, access-token hashing, and persisted OAuth state.
 - `rateLimit.ts` — In-memory per-IP rate limits for OAuth endpoints and `/mcp`.
 - `logger.ts` — Structured runtime logging controlled by `MCP_LOG_LEVEL`.

@@ -91,22 +91,6 @@ const httpServer = Bun.serve({
       }));
     }
 
-    if (url.pathname === "/openapi.json") {
-      const spec = generateOpenApiSpec(config.services, config.publicUrl);
-      return secureResponse(Response.json(spec));
-    }
-
-    if (url.pathname === "/docs") {
-      const openapiUrl = config.publicUrl
-        ? `${config.publicUrl.replace(/\/$/, "")}/openapi.json`
-        : `${new URL(req.url).origin}/openapi.json`;
-      return secureResponse(
-        new Response(renderSwaggerUI(openapiUrl), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        }),
-      );
-    }
-
     // CORS preflight for OAuth and discovery endpoints
     if (req.method === "OPTIONS" && (
       url.pathname.startsWith("/.well-known/") ||
@@ -161,7 +145,8 @@ const httpServer = Bun.serve({
       return secureResponse(await revokeToken(req));
     }
 
-    if (url.pathname !== "/mcp") {
+    const AUTHENTICATED_PATHS = new Set(["/mcp", "/openapi.json", "/docs"]);
+    if (!AUTHENTICATED_PATHS.has(url.pathname)) {
       return secureResponse(json({ error: "not_found" }, { status: 404 }));
     }
 
@@ -186,6 +171,22 @@ const httpServer = Bun.serve({
 
     if (!isStaticToken && !isOauth) {
       return unauthorized(oauthConfig, req);
+    }
+
+    if (url.pathname === "/openapi.json") {
+      const spec = generateOpenApiSpec(config.services, config.publicUrl);
+      return secureResponse(Response.json(spec));
+    }
+
+    if (url.pathname === "/docs") {
+      const openapiUrl = config.publicUrl
+        ? `${config.publicUrl.replace(/\/$/, "")}/openapi.json`
+        : `${new URL(req.url).origin}/openapi.json`;
+      return secureResponse(
+        new Response(renderSwaggerUI(openapiUrl), {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+      );
     }
 
     const response = await handleMcp(req, isOauth ? token : "", requestId);
