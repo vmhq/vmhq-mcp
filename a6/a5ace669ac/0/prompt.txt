@@ -1,0 +1,5 @@
+revisa si claude.md y agents.md estan actulizados y revisa la segruidad del codigo
+
+---
+
+explicame en simple cuales fueron los fixes de seguirdad
