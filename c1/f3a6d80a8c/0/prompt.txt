@@ -1,0 +1,13 @@
+es posible que el mcp exponga las entidades frecuentes que se usan en home assistant para que asi el agente de ia no tenga que buscar entre todas las entidades?
+
+---
+
+si, es mejor la opcion a en .env y asi ademas lo personaliza el usuario
+
+---
+
+sera posible añadirle una fuciona de friendly name, por ejemplo una tira led que tengo se llama RGB TV, entonces la idea es que el agente asocie ese nombre con el id de la entidad correspondiente
+
+---
+
+edita readme, claude.md, agents.md el .env example con la nueva imlementacion
