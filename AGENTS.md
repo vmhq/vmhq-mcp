@@ -47,4 +47,6 @@ Image: `ghcr.io/vmhq/vmhq-mcp`. Dockerfile copies source `.ts` files and runs th
 - `src/apiCatalog.ts` exports `API_CATALOGS: Record<ServiceId, ApiCatalog>` — the only runtime data source for `*_api_reference` and `*_operation`.
 - `src/serviceRegistry.ts` declares service metadata in one registry; `src/config.ts` maps registry entries to `ServiceDefinition[]` and skips unconfigured services.
 - `src/oauth.ts`, `src/rateLimit.ts`, and `src/logger.ts` are active runtime modules; keep docs and tests aligned when changing auth, request limits, or structured logging.
+- `src/uploadStore.ts` manages in-memory Paperless chunked upload sessions (start/addChunk/finish/abort); enforces PDF validation, 50 MB decoded limit, 64 KB per-chunk base64 limit, and a 15-minute TTL.
+- `src/openapi.ts` generates the OpenAPI 3.0.3 spec and Swagger UI; both `/openapi.json` and `/docs` require Bearer or OAuth authentication.
 - Response body parsing in `serviceClient.ts` returns `null` for empty bodies, parsed JSON for `application/json`, raw text otherwise.

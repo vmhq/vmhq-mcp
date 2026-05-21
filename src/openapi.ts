@@ -128,7 +128,7 @@ export function renderSwaggerUI(openapiUrl: string): string {
   <script>
     window.onload = () => {
       window.ui = SwaggerUIBundle({
-        url: '${openapiUrl}',
+        url: ${JSON.stringify(openapiUrl)},
         dom_id: '#swagger-ui',
         deepLinking: true,
         presets: [

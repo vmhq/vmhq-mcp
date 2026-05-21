@@ -324,7 +324,7 @@ export async function registerClient(req: Request): Promise<Response> {
     clientId,
     clientIdIssuedAt,
     redirectUris,
-    clientName: typeof body.client_name === "string" ? body.client_name : undefined,
+    clientName: typeof body.client_name === "string" ? body.client_name.slice(0, 256) : undefined,
   };
   clients.set(clientId, client);
   saveState();

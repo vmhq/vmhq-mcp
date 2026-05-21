@@ -34,7 +34,7 @@ const defaultConfigs: Record<string, RateLimitConfig> = {
   mcp: { maxRequests: 120, windowMs: 60_000 },
 };
 
-/** Stricter cap when the client IP cannot be determined (avoids one shared 0.0.0.0 bucket). */
+/** Shared bucket for all unknown-IP requests (no per-IP tracking possible; acts as a global fallback cap). */
 const unknownClientConfigs: Partial<Record<string, RateLimitConfig>> = {
   oauth_register: { maxRequests: 60, windowMs: 60_000 },
   oauth_authorize: { maxRequests: 30, windowMs: 60_000 },
