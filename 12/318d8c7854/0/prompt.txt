@@ -1,0 +1,25 @@
+que eres?
+
+---
+
+poque zhs marca git con una x?
+
+---
+
+tengo archivos sin seguimiento?
+
+---
+
+elimina ambos
+
+---
+
+si
+
+---
+
+la carpeta .claude cambio a color rojo en zed
+
+---
+
+si, limpia todo
