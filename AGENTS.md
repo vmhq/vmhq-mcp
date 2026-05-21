@@ -24,6 +24,14 @@ Only `MCP_ACCESS_TOKEN` is required at startup (server crashes without it). All 
 
 A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No error, no tools registered.
 
+`HOME_ASSISTANT_PINNED_ENTITIES` is an optional comma-separated list of Home Assistant entity IDs, each with an optional `:Alias` suffix:
+
+```
+HOME_ASSISTANT_PINNED_ENTITIES=light.tira_led_tv:RGB TV,switch.tv,sensor.temperatura_exterior:Temp Exterior
+```
+
+When set, a `home_assistant_pinned_entities` tool is registered that fetches those entity states in parallel. The tool description lists all aliases so the agent can identify entities by friendly name before calling the tool. When unset, the tool is not registered and there is no overhead.
+
 The `static` auth type (used by Proxmox) sets a fixed `headerName: value` pair directly at startup (no env lookup at request time).
 
 Miniflux auth mode is controlled by `MINIFLUX_AUTH_MODE`:

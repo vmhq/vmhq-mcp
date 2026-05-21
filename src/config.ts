@@ -25,6 +25,8 @@ function readNumberEnv(name: string, fallback: number): number {
   return value;
 }
 
+export type PinnedHaEntity = { entityId: string; alias?: string };
+
 export type AppConfig = {
   port: number;
   publicUrl?: string;
@@ -33,12 +35,26 @@ export type AppConfig = {
   corsOrigin?: string;
   upstreamTimeoutMs: number;
   services: ServiceDefinition[];
+  pinnedHaEntities: PinnedHaEntity[];
 };
 
 export function loadConfig(): AppConfig {
   const services = SERVICE_REGISTRY.map((entry) => serviceFromRegistryEntry(entry, readEnv)).filter(
     (service): service is ServiceDefinition => service !== undefined,
   );
+
+  const rawPinnedEntities = readEnv("HOME_ASSISTANT_PINNED_ENTITIES");
+  const pinnedHaEntities: PinnedHaEntity[] = rawPinnedEntities
+    ? rawPinnedEntities.split(",").flatMap((s) => {
+        const trimmed = s.trim();
+        if (!trimmed) return [];
+        const colonIdx = trimmed.indexOf(":");
+        if (colonIdx === -1) return [{ entityId: trimmed }];
+        const entityId = trimmed.slice(0, colonIdx).trim();
+        const alias = trimmed.slice(colonIdx + 1).trim();
+        return entityId ? [{ entityId, alias: alias || undefined }] : [];
+      })
+    : [];
 
   return {
     port: readNumberEnv("MCP_PORT", 3010),
@@ -48,5 +64,6 @@ export function loadConfig(): AppConfig {
     corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
     services,
+    pinnedHaEntities,
   };
 }
