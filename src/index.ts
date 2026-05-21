@@ -54,7 +54,7 @@ function secureResponse(resp: Response): Response {
 }
 
 async function handleMcp(req: Request, token: string, requestId: string): Promise<Response> {
-  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, requestId);
+  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, config.pinnedHaEntities, requestId);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);

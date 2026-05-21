@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceRequestInput } from "./services.js";
@@ -245,7 +246,7 @@ function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinit
   );
 }
 
-export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, requestId?: string): McpServer {
+export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, pinnedHaEntities: PinnedHaEntity[] = [], requestId?: string): McpServer {
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
@@ -420,6 +421,39 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
 
     if (service.id === "paperless") {
       registerPaperlessUploadTools(server, service, upstreamTimeoutMs, requestId);
+    }
+
+    if (service.id === "home_assistant" && pinnedHaEntities.length > 0) {
+      const pinnedSummary = pinnedHaEntities
+        .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
+        .join(", ");
+
+      server.tool(
+        "home_assistant_pinned_entities",
+        `Return the current state of your pinned Home Assistant entities: ${pinnedSummary}. Call this first to get entity IDs and states without fetching all entities.`,
+        {
+          fields: z.array(z.string()).optional().describe("Optional list of state fields to keep per entity, e.g. ['entity_id','state','attributes.friendly_name']."),
+        },
+        { title: "Home Assistant Pinned Entities" },
+        async ({ fields }: { fields?: string[] }) => {
+          const results = await Promise.all(
+            pinnedHaEntities.map(({ entityId }) =>
+              callService(
+                service,
+                { method: "GET", path: `/api/states/${entityId}`, fields },
+                { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", requestId },
+              ),
+            ),
+          );
+
+          const payload = pinnedHaEntities.map(({ entityId, alias }, i) => ({
+            entity_id: entityId,
+            ...(alias ? { alias } : {}),
+            result: results[i],
+          }));
+          return { content: [{ type: "text", text: responseText(payload) }] };
+        },
+      );
     }
   }
 

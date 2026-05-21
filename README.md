@@ -93,6 +93,9 @@ PAPERLESS_BASE_URL=https://paperless.example.com
 
 # Service credentials
 HOME_ASSISTANT_TOKEN=
+# Pinned Home Assistant entities — comma-separated entity_id, optionally with :Alias suffix.
+# Activates home_assistant_pinned_entities tool so agents skip the full get_states call.
+# HOME_ASSISTANT_PINNED_ENTITIES=light.tira_led_tv:RGB TV,switch.tv,sensor.temperatura_exterior:Temp Exterior
 MINIFLUX_TOKEN=
 KARAKEEP_TOKEN=
 MEMOS_TOKEN=
@@ -179,6 +182,7 @@ Do not paste `MCP_ACCESS_TOKEN` into Claude's advanced OAuth Client ID/Secret fi
 For each service:
 
 - `home_assistant_api_reference`, `home_assistant_operation`, `home_assistant_request`
+- `home_assistant_pinned_entities` — fetches your configured pinned entities in parallel (enabled by `HOME_ASSISTANT_PINNED_ENTITIES`)
 - `miniflux_api_reference`, `miniflux_operation`, `miniflux_request`
 - `karakeep_api_reference`, `karakeep_operation`, `karakeep_request`
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
@@ -190,10 +194,11 @@ For each service:
 
 Recommended agent workflow:
 
-1. Call `*_api_reference` with `group` or `search`.
-2. Pick an `operationId`.
-3. Run `*_operation` with `pathParams`, `query`, and/or `body`.
-4. Use `*_request` only when the service's documentation has an endpoint not yet in the local catalogue.
+1. For Home Assistant, call `home_assistant_pinned_entities` first to get the IDs and current state of your most-used entities (if configured).
+2. Call `*_api_reference` with `group` or `search` to discover available operations.
+3. Pick an `operationId`.
+4. Run `*_operation` with `pathParams`, `query`, and/or `body`.
+5. Use `*_request` only when the service's documentation has an endpoint not yet in the local catalogue.
 
 Example:
 
