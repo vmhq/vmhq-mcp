@@ -261,7 +261,6 @@ For larger files, use the chunked upload tools:
 | Platform | URL |
 |----------|-----|
 | GitHub | https://github.com/vmhq/vmhq-mcp |
-| Radicle | `rad:zAW6yz62TaQrWzt992k2QVnxwKrG` — [Radicle Network](https://radicle.network/nodes/rosa.radicle.xyz/rad%3AzAW6yz62TaQrWzt992k2QVnxwKrG) |
 
 ## Verified API sources
 
