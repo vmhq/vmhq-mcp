@@ -32,7 +32,7 @@ The HTTP server also exposes `/health`, OAuth discovery metadata, dynamic client
 - `logger.ts` — Structured runtime logging controlled by `MCP_LOG_LEVEL`.
 - `mcp.ts` — Registers `vmhq_status` plus three MCP tools per enabled service: `*_api_reference`, `*_operation`, `*_request`. Tool names are derived from `service.id`. Also registers `home_assistant_pinned_entities` when Home Assistant is enabled and `HOME_ASSISTANT_PINNED_ENTITIES` is set.
 - `config.ts` — Reads env vars and maps declarative service registry entries into the `ServiceDefinition[]` array. `requireEnv()` throws at startup for missing required vars; optional vars use `readEnv()` with fallbacks.
-- `serviceRegistry.ts` — Declarative service metadata: env vars, auth mode, default path prefix, default base URL, optional `enabledWhenEnv`, and default path params.
+- `serviceRegistry.ts` — Declarative service metadata: env vars, auth mode, default path prefix, default base URL, optional `enabledWhenEnv`, default path params, and optional `pingPath` (lightweight health-check path used by `vmhq_status` when `ping: true`).
 - `services.ts` — Types only: `ServiceDefinition`, `ServiceAuth` (five auth modes), `ServiceRequestInput`.
 - `serviceClient.ts` — `callService()` builds the URL, injects auth headers, blocks dangerous request headers (`BLOCKED_REQUEST_HEADERS`), applies upstream timeouts, logs structured request events, and returns structured success or normalized error objects. `interpolatePath()` handles `{param}` substitution.
 - `apiCatalog.ts` — Static catalog of known API endpoints for each service (`ApiCatalog` / `ApiEndpoint`). `catalogFor()` and `endpointFor()` are the lookup helpers used by `*_api_reference` and `*_operation`.
@@ -65,7 +65,7 @@ The three service MCP tools are registered automatically from enabled `services`
 
 `HOME_ASSISTANT_PINNED_ENTITIES` is an optional comma-separated list of entity IDs (with optional `:Alias` suffix) that activates the `home_assistant_pinned_entities` tool. Example: `light.tira_led_tv:RGB TV,switch.tv,sensor.temperatura_exterior:Temp Exterior`. When unset, the tool is not registered.
 
-OAuth client registrations, authorization codes (5 min TTL), and access token hashes persist to `MCP_OAUTH_STATE_PATH` (default `./data/oauth-state.json`). Authorization codes are single-use. `/oauth/register` is public by design for Dynamic Client Registration, while registration still validates HTTPS redirect URIs and is rate-limited in memory. OAuth and `/mcp` routes are rate-limited in memory using `CF-Connecting-IP`, `X-Real-IP`, or `X-Forwarded-For`. `MCP_CORS_ORIGIN`, `MCP_UPSTREAM_TIMEOUT_MS`, `MCP_LOG_LEVEL`, `MCP_PUBLIC_URL`, and `MCP_ICON_URL` tune runtime behavior.
+OAuth client registrations, authorization codes (5 min TTL), and access token hashes persist to `MCP_OAUTH_STATE_PATH` (default `./data/oauth-state.json`). Authorization codes are single-use. `/oauth/register` is public by design for Dynamic Client Registration, while registration still validates HTTPS redirect URIs and is rate-limited in memory. OAuth and `/mcp` routes are rate-limited in memory using `CF-Connecting-IP`, `X-Real-IP`, or `X-Forwarded-For`. `MCP_PORT` (default `3010`), `MCP_CORS_ORIGIN`, `MCP_UPSTREAM_TIMEOUT_MS`, `MCP_LOG_LEVEL`, `MCP_PUBLIC_URL`, and `MCP_ICON_URL` tune runtime behavior.
 
 <!-- rtk-instructions v2 -->
 # RTK (Rust Token Killer) - Token-Optimized Commands

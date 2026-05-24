@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
-import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceRequestInput } from "./services.js";
+import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMethod, type ServiceRequestInput } from "./services.js";
 import { paperlessUploadStore } from "./uploadStore.js";
 
 const queryValueSchema = z.union([
@@ -314,6 +314,51 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
               ...(pingResults ? { ping: pingResults } : {}),
               iconUrl,
             }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "vmhq_find_operation",
+    "Search for API operations across all enabled VMHQ services by keyword. Searches operationId, HTTP method, path, and summary in a single call. Use this instead of calling each service's *_api_reference separately when you don't know which service owns an operation.",
+    {
+      query: z.string().min(1).describe("Case-insensitive keyword to search across operationId, method, path, and summary."),
+      method: z.enum(SERVICE_METHODS).optional().describe("Optional HTTP method filter (GET, POST, PUT, PATCH, DELETE)."),
+    },
+    { title: "VMHQ Find Operation" },
+    async ({ query, method }: { query: string; method?: ServiceMethod }) => {
+      const normalizedQuery = query.toLowerCase();
+
+      const results = services.flatMap((service) => {
+        const catalog = API_CATALOGS[service.id];
+        if (!catalog) return [];
+
+        return catalog.endpoints
+          .filter((endpoint) => {
+            if (method && endpoint.method !== method) return false;
+            const haystack = `${endpoint.operationId} ${endpoint.method} ${endpoint.path} ${endpoint.summary}`.toLowerCase();
+            return haystack.includes(normalizedQuery);
+          })
+          .map((endpoint) => ({
+            service: service.id,
+            serviceTitle: catalog.title,
+            operationTool: `${service.id}_operation`,
+            operationId: endpoint.operationId,
+            method: endpoint.method,
+            path: endpoint.path,
+            summary: endpoint.summary,
+            group: endpoint.group,
+            ...(endpoint.destructive ? { destructive: true } : {}),
+          }));
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: responseText({ query, total: results.length, results }),
           },
         ],
       };
