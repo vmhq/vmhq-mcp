@@ -20,7 +20,7 @@ Correctness gates are `bun run typecheck` and `bun test`. The current test suite
 
 ## Environment variables
 
-Only `MCP_ACCESS_TOKEN` is required at startup (server crashes without it). All other env vars are optional.
+Only `MCP_ACCESS_TOKEN` is required at startup (server crashes without it). All other env vars are optional. `MCP_PORT` sets the listen port (defaults to `3010`).
 
 A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No error, no tools registered.
 
@@ -53,7 +53,7 @@ Image: `ghcr.io/vmhq/vmhq-mcp`. Dockerfile copies source `.ts` files and runs th
 - All imports use `.js` extensions (Bun/NodeNext resolution).
 - `src/services.ts` defines the `ServiceAuth` union and `ServiceDefinition` type — every service addition touches this file.
 - `src/apiCatalog.ts` exports `API_CATALOGS: Record<ServiceId, ApiCatalog>` — the only runtime data source for `*_api_reference` and `*_operation`.
-- `src/serviceRegistry.ts` declares service metadata in one registry; `src/config.ts` maps registry entries to `ServiceDefinition[]` and skips unconfigured services.
+- `src/serviceRegistry.ts` declares service metadata in one registry; `src/config.ts` maps registry entries to `ServiceDefinition[]` and skips unconfigured services. Each entry carries an optional `pingPath` — a lightweight GET path (e.g. `/api/`) used by `vmhq_status` when called with `ping: true` to verify reachability with a 3 s timeout.
 - `src/oauth.ts`, `src/rateLimit.ts`, and `src/logger.ts` are active runtime modules; keep docs and tests aligned when changing auth, request limits, or structured logging.
 - `src/uploadStore.ts` manages in-memory Paperless chunked upload sessions (start/addChunk/finish/abort); enforces PDF validation, 50 MB decoded limit, 64 KB per-chunk base64 limit, and a 15-minute TTL.
 - `src/openapi.ts` generates the OpenAPI 3.0.3 spec and Swagger UI; both `/openapi.json` and `/docs` require Bearer or OAuth authentication.
