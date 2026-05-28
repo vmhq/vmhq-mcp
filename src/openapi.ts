@@ -1,8 +1,27 @@
 import { API_CATALOGS } from "./apiCatalog.js";
 import type { ServiceDefinition } from "./services.js";
 
+type OpenApiParameter = {
+  name: string;
+  in: "path" | "query";
+  required: boolean;
+  schema: { type: string };
+};
+
+type OpenApiOperation = {
+  operationId: string;
+  summary: string;
+  tags: string[];
+  parameters: OpenApiParameter[];
+  responses: Record<string, unknown>;
+  description?: string;
+  requestBody?: unknown;
+};
+
+type OpenApiPathItem = Partial<Record<string, OpenApiOperation>>;
+
 export function generateOpenApiSpec(services: ServiceDefinition[], publicUrl?: string) {
-  const paths: Record<string, any> = {};
+  const paths: Record<string, OpenApiPathItem> = {};
   const tags: Array<{ name: string; description: string }> = [];
 
   for (const service of services) {
@@ -23,7 +42,7 @@ export function generateOpenApiSpec(services: ServiceDefinition[], publicUrl?: s
         paths[openApiPath] = {};
       }
 
-      const parameters: any[] = [];
+      const parameters: OpenApiParameter[] = [];
 
       // Extract path parameters from the path string (e.g., {id})
       const pathParamMatches = endpoint.path.match(/\{([^}]+)\}/g);
@@ -51,7 +70,7 @@ export function generateOpenApiSpec(services: ServiceDefinition[], publicUrl?: s
         }
       }
 
-      const operation: any = {
+      const operation: OpenApiOperation = {
         operationId: `${service.id}_${endpoint.operationId}`,
         summary: endpoint.summary,
         tags: [service.title],
