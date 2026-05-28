@@ -13,15 +13,19 @@ const queryValueSchema = z.union([
   z.array(z.union([z.string(), z.number(), z.boolean()])),
 ]);
 
-const serviceRequestSchema = {
-  method: z.enum(SERVICE_METHODS).default("GET"),
-  path: z.string().min(1).describe("Relative API path inside the service, for example /api/v1/entries."),
+const commonRequestFields = {
   query: z.record(queryValueSchema).optional().describe("Optional query string parameters."),
   body: z.unknown().optional().describe("Optional JSON request body for non-GET methods."),
   headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
   fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects. Useful for large arrays like /api/states to reduce token usage."),
   maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
   domain: z.string().optional().describe("Optional Home Assistant domain filter. When the response is an array of objects with entity_id, only items matching domain.* are kept. Example: light, switch, sensor."),
+};
+
+const serviceRequestSchema = {
+  method: z.enum(SERVICE_METHODS).default("GET"),
+  path: z.string().min(1).describe("Relative API path inside the service, for example /api/v1/entries."),
+  ...commonRequestFields,
 };
 
 const apiReferenceSchema = {
@@ -32,12 +36,7 @@ const apiReferenceSchema = {
 const apiOperationSchema = {
   operationId: z.string().min(1).describe("Operation ID from the matching *_api_reference tool."),
   pathParams: z.record(z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {entity_id}."),
-  query: z.record(queryValueSchema).optional().describe("Optional query string parameters."),
-  body: z.unknown().optional().describe("Optional JSON request body."),
-  headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
-  fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects."),
-  maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
-  domain: z.string().optional().describe("Optional Home Assistant domain filter. When the response is an array of objects with entity_id, only items matching domain.* are kept."),
+  ...commonRequestFields,
 };
 
 const paperlessUploadStartSchema = {
@@ -78,6 +77,14 @@ function responseText(payload: unknown, maxLength?: number): string {
   }
 
   return compact;
+}
+
+function textResult(payload: unknown, maxLength?: number) {
+  return { content: [{ type: "text" as const, text: responseText(payload, maxLength) }] };
+}
+
+function errorResult(payload: unknown, maxLength?: number) {
+  return { content: [{ type: "text" as const, text: responseText(payload, maxLength) }], isError: true };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -134,130 +141,15 @@ function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, se
   };
 }
 
-function uploadErrorText(message: string): string {
-  return responseText({ error: { type: "invalid_upload", service: "paperless", message, retryable: false } });
+function uploadErrorResult(message: string) {
+  return errorResult({ error: { type: "invalid_upload", service: "paperless", message, retryable: false } });
 }
 
-function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
-  server.tool(
-    "paperless_upload_start",
-    "Start a chunked Paperless document upload. Use this for PDFs too large to pass as one _base64 value.",
-    paperlessUploadStartSchema,
-    { title: "Paperless Upload Start" },
-    async (input: {
-      filename: string;
-      contentType?: string;
-      expectedSize?: number;
-      expectedBase64Length?: number;
-      title?: string;
-      correspondent?: string | number;
-      document_type?: string | number;
-      storage_path?: string | number;
-      tags?: Array<string | number>;
-      created?: string;
-    }) => {
-      try {
-        const { filename, contentType, expectedSize, expectedBase64Length, title, correspondent, document_type, storage_path, tags, created } = input;
-        const fields: Record<string, string | number | Array<string | number>> = {};
-        if (title !== undefined) fields.title = title;
-        if (correspondent !== undefined) fields.correspondent = correspondent;
-        if (document_type !== undefined) fields.document_type = document_type;
-        if (storage_path !== undefined) fields.storage_path = storage_path;
-        if (tags !== undefined) fields.tags = tags;
-        if (created !== undefined) fields.created = created;
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: responseText(
-                paperlessUploadStore.start({ filename, contentType: contentType ?? "application/pdf", expectedSize, expectedBase64Length, fields }),
-              ),
-            },
-          ],
-        };
-      } catch (error) {
-        return { content: [{ type: "text", text: uploadErrorText(error instanceof Error ? error.message : String(error)) }], isError: true };
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_chunk",
-    "Add one base64 chunk to a Paperless chunked upload. Chunks are zero-indexed.",
-    paperlessUploadChunkSchema,
-    { title: "Paperless Upload Chunk" },
-    async (input: { uploadId: string; index: number; chunkBase64: string }) => {
-      try {
-        return {
-          content: [{ type: "text", text: responseText(paperlessUploadStore.addChunk(input.uploadId, input.index, input.chunkBase64)) }],
-        };
-      } catch (error) {
-        return { content: [{ type: "text", text: uploadErrorText(error instanceof Error ? error.message : String(error)) }], isError: true };
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_finish",
-    "Finish a chunked Paperless upload, validate the PDF, and post it to /api/documents/post_document/.",
-    paperlessUploadFinishSchema,
-    { title: "Paperless Upload Finish" },
-    async (input: { uploadId: string }) => {
-      try {
-        const { session, bytes } = paperlessUploadStore.finish(input.uploadId);
-        const result = await callService(
-          service,
-          {
-            method: "POST",
-            path: "/api/documents/post_document/",
-            body: {
-              _multipart: true,
-              ...session.fields,
-              document: {
-                _bytes: bytes,
-                filename: session.filename,
-                contentType: session.contentType,
-              },
-            },
-          },
-          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "paperless_upload_finish", requestId },
-        );
-
-        return { content: [{ type: "text", text: responseText({ uploadId: input.uploadId, result }) }] };
-      } catch (error) {
-        return { content: [{ type: "text", text: uploadErrorText(error instanceof Error ? error.message : String(error)) }], isError: true };
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_abort",
-    "Abort and delete a pending chunked Paperless upload session.",
-    paperlessUploadAbortSchema,
-    { title: "Paperless Upload Abort" },
-    async (input: { uploadId: string }) => {
-      try {
-        return { content: [{ type: "text", text: responseText(paperlessUploadStore.abort(input.uploadId)) }] };
-      } catch (error) {
-        return { content: [{ type: "text", text: uploadErrorText(error instanceof Error ? error.message : String(error)) }], isError: true };
-      }
-    },
-  );
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, pinnedHaEntities: PinnedHaEntity[] = [], requestId?: string): McpServer {
-  const server = new McpServer({
-    name: "vmhq-mcp",
-    version: "0.1.0",
-    icons: [
-      {
-        src: iconUrl,
-        mimeType: "image/png",
-      },
-    ],
-  });
-
+function registerStatusTools(server: McpServer, services: ServiceDefinition[], iconUrl: string, requestId?: string): void {
   server.tool(
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
@@ -303,20 +195,13 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
         pingResults = Object.fromEntries(entries);
       }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: responseText({
-              status: "ok",
-              enabledServices: enabled,
-              disabledServices: disabled,
-              ...(pingResults ? { ping: pingResults } : {}),
-              iconUrl,
-            }),
-          },
-        ],
-      };
+      return textResult({
+        status: "ok",
+        enabledServices: enabled,
+        disabledServices: disabled,
+        ...(pingResults ? { ping: pingResults } : {}),
+        iconUrl,
+      });
     },
   );
 
@@ -354,151 +239,233 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
           }));
       });
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: responseText({ query, total: results.length, results }),
-          },
-        ],
-      };
+      return textResult({ query, total: results.length, results });
+    },
+  );
+}
+
+function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
+  server.tool(
+    `${service.id}_api_reference`,
+    `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
+    apiReferenceSchema,
+    { title: `${service.title} API Reference` },
+    async ({ group, search }: { group?: string; search?: string }) => {
+      return textResult(compactCatalog(service.id, group, search));
     },
   );
 
-  for (const service of services) {
-    server.tool(
-      `${service.id}_api_reference`,
-      `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
-      apiReferenceSchema,
-      { title: `${service.title} API Reference` },
-      async ({ group, search }: { group?: string; search?: string }) => {
-        return {
-          content: [
-            {
-              type: "text",
-              text: responseText(compactCatalog(service.id, group, search)),
-            },
-          ],
-        };
-      },
-    );
+  server.tool(
+    `${service.id}_operation`,
+    `Call a documented ${service.title} operation by operationId. Use ${service.id}_api_reference first to discover valid operations and required path parameters.`,
+    apiOperationSchema,
+    { title: `${service.title} Operation` },
+    async (input: {
+      operationId: string;
+      pathParams?: Record<string, string | number>;
+      query?: ServiceRequestInput["query"];
+      body?: unknown;
+      headers?: Record<string, string>;
+      fields?: ServiceRequestInput["fields"];
+      maxLength?: ServiceRequestInput["maxLength"];
+      domain?: ServiceRequestInput["domain"];
+    }) => {
+      const endpoint = endpointFor(service.id, input.operationId);
 
-    server.tool(
-      `${service.id}_operation`,
-      `Call a documented ${service.title} operation by operationId. Use ${service.id}_api_reference first to discover valid operations and required path parameters.`,
-      apiOperationSchema,
-      { title: `${service.title} Operation` },
-      async (input: {
-        operationId: string;
-        pathParams?: Record<string, string | number>;
-        query?: ServiceRequestInput["query"];
-        body?: unknown;
-        headers?: Record<string, string>;
-        fields?: ServiceRequestInput["fields"];
-        maxLength?: ServiceRequestInput["maxLength"];
-        domain?: ServiceRequestInput["domain"];
-      }) => {
-        const endpoint = endpointFor(service.id, input.operationId);
+      if (!endpoint) {
+        return errorResult({
+          error: "unknown_operation",
+          operationId: input.operationId,
+          hint: `Call ${service.id}_api_reference to list supported operation IDs.`,
+        });
+      }
 
-        if (!endpoint) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: responseText({
-                  error: "unknown_operation",
-                  operationId: input.operationId,
-                  hint: `Call ${service.id}_api_reference to list supported operation IDs.`,
-                }),
-              },
-            ],
-            isError: true,
-          };
-        }
+      const result = await callService(
+        service,
+        {
+          method: endpoint.method,
+          path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
+          query: input.query,
+          body: operationBody(endpoint, input.body),
+          headers: input.headers,
+          fields: input.fields,
+          maxLength: input.maxLength,
+          domain: input.domain,
+        },
+        { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, requestId },
+      );
 
+      return textResult({ operation: endpoint, result }, input.maxLength);
+    },
+  );
+
+  server.tool(
+    `${service.id}_request`,
+    `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}`,
+    serviceRequestSchema,
+    { title: `${service.title} Request` },
+    async (input: ServiceRequestInput) => {
+      const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, requestId });
+      return textResult(result, input.maxLength);
+    },
+  );
+}
+
+function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
+  server.tool(
+    "paperless_upload_start",
+    "Start a chunked Paperless document upload. Use this for PDFs too large to pass as one _base64 value.",
+    paperlessUploadStartSchema,
+    { title: "Paperless Upload Start" },
+    async (input: {
+      filename: string;
+      contentType?: string;
+      expectedSize?: number;
+      expectedBase64Length?: number;
+      title?: string;
+      correspondent?: string | number;
+      document_type?: string | number;
+      storage_path?: string | number;
+      tags?: Array<string | number>;
+      created?: string;
+    }) => {
+      try {
+        const { filename, contentType, expectedSize, expectedBase64Length, title, correspondent, document_type, storage_path, tags, created } = input;
+        const fields: Record<string, string | number | Array<string | number>> = {};
+        if (title !== undefined) fields.title = title;
+        if (correspondent !== undefined) fields.correspondent = correspondent;
+        if (document_type !== undefined) fields.document_type = document_type;
+        if (storage_path !== undefined) fields.storage_path = storage_path;
+        if (tags !== undefined) fields.tags = tags;
+        if (created !== undefined) fields.created = created;
+
+        return textResult(
+          paperlessUploadStore.start({ filename, contentType: contentType ?? "application/pdf", expectedSize, expectedBase64Length, fields }),
+        );
+      } catch (error) {
+        return uploadErrorResult(errorMessage(error));
+      }
+    },
+  );
+
+  server.tool(
+    "paperless_upload_chunk",
+    "Add one base64 chunk to a Paperless chunked upload. Chunks are zero-indexed.",
+    paperlessUploadChunkSchema,
+    { title: "Paperless Upload Chunk" },
+    async (input: { uploadId: string; index: number; chunkBase64: string }) => {
+      try {
+        return textResult(paperlessUploadStore.addChunk(input.uploadId, input.index, input.chunkBase64));
+      } catch (error) {
+        return uploadErrorResult(errorMessage(error));
+      }
+    },
+  );
+
+  server.tool(
+    "paperless_upload_finish",
+    "Finish a chunked Paperless upload, validate the PDF, and post it to /api/documents/post_document/.",
+    paperlessUploadFinishSchema,
+    { title: "Paperless Upload Finish" },
+    async (input: { uploadId: string }) => {
+      try {
+        const { session, bytes } = paperlessUploadStore.finish(input.uploadId);
         const result = await callService(
           service,
           {
-            method: endpoint.method,
-            path: interpolatePath(endpoint.path, { ...service.defaultPathParams, ...input.pathParams }),
-            query: input.query,
-            body: operationBody(endpoint, input.body),
-            headers: input.headers,
-            fields: input.fields,
-            maxLength: input.maxLength,
-            domain: input.domain,
+            method: "POST",
+            path: "/api/documents/post_document/",
+            body: {
+              _multipart: true,
+              ...session.fields,
+              document: {
+                _bytes: bytes,
+                filename: session.filename,
+                contentType: session.contentType,
+              },
+            },
           },
-          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, requestId },
+          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "paperless_upload_finish", requestId },
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: responseText({
-                operation: endpoint,
-                result,
-              }, input.maxLength),
-            },
-          ],
-        };
-      },
-    );
+        return textResult({ uploadId: input.uploadId, result });
+      } catch (error) {
+        return uploadErrorResult(errorMessage(error));
+      }
+    },
+  );
 
-    server.tool(
-      `${service.id}_request`,
-      `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}`,
-      serviceRequestSchema,
-      { title: `${service.title} Request` },
-      async (input: ServiceRequestInput) => {
-        const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, requestId });
+  server.tool(
+    "paperless_upload_abort",
+    "Abort and delete a pending chunked Paperless upload session.",
+    paperlessUploadAbortSchema,
+    { title: "Paperless Upload Abort" },
+    async (input: { uploadId: string }) => {
+      try {
+        return textResult(paperlessUploadStore.abort(input.uploadId));
+      } catch (error) {
+        return uploadErrorResult(errorMessage(error));
+      }
+    },
+  );
+}
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: responseText(result, input.maxLength),
-            },
-          ],
-        };
+function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, requestId?: string): void {
+  const pinnedSummary = pinnedHaEntities
+    .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
+    .join(", ");
+
+  server.tool(
+    "home_assistant_pinned_entities",
+    `Return the current state of your pinned Home Assistant entities: ${pinnedSummary}. Call this first to get entity IDs and states without fetching all entities.`,
+    {
+      fields: z.array(z.string()).optional().describe("Optional list of state fields to keep per entity, e.g. ['entity_id','state','attributes.friendly_name']."),
+    },
+    { title: "Home Assistant Pinned Entities" },
+    async ({ fields }: { fields?: string[] }) => {
+      const results = await Promise.all(
+        pinnedHaEntities.map(({ entityId }) =>
+          callService(
+            service,
+            { method: "GET", path: `/api/states/${entityId}`, fields },
+            { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", requestId },
+          ),
+        ),
+      );
+
+      const payload = pinnedHaEntities.map(({ entityId, alias }, i) => ({
+        entity_id: entityId,
+        ...(alias ? { alias } : {}),
+        result: results[i],
+      }));
+      return textResult(payload);
+    },
+  );
+}
+
+export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, pinnedHaEntities: PinnedHaEntity[] = [], requestId?: string): McpServer {
+  const server = new McpServer({
+    name: "vmhq-mcp",
+    version: "0.1.0",
+    icons: [
+      {
+        src: iconUrl,
+        mimeType: "image/png",
       },
-    );
+    ],
+  });
+
+  registerStatusTools(server, services, iconUrl, requestId);
+
+  for (const service of services) {
+    registerServiceTools(server, service, upstreamTimeoutMs, requestId);
 
     if (service.id === "paperless") {
       registerPaperlessUploadTools(server, service, upstreamTimeoutMs, requestId);
     }
 
     if (service.id === "home_assistant" && pinnedHaEntities.length > 0) {
-      const pinnedSummary = pinnedHaEntities
-        .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
-        .join(", ");
-
-      server.tool(
-        "home_assistant_pinned_entities",
-        `Return the current state of your pinned Home Assistant entities: ${pinnedSummary}. Call this first to get entity IDs and states without fetching all entities.`,
-        {
-          fields: z.array(z.string()).optional().describe("Optional list of state fields to keep per entity, e.g. ['entity_id','state','attributes.friendly_name']."),
-        },
-        { title: "Home Assistant Pinned Entities" },
-        async ({ fields }: { fields?: string[] }) => {
-          const results = await Promise.all(
-            pinnedHaEntities.map(({ entityId }) =>
-              callService(
-                service,
-                { method: "GET", path: `/api/states/${entityId}`, fields },
-                { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", requestId },
-              ),
-            ),
-          );
-
-          const payload = pinnedHaEntities.map(({ entityId, alias }, i) => ({
-            entity_id: entityId,
-            ...(alias ? { alias } : {}),
-            result: results[i],
-          }));
-          return { content: [{ type: "text", text: responseText(payload) }] };
-        },
-      );
+      registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, requestId);
     }
   }
 
