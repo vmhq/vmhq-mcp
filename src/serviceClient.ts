@@ -142,10 +142,20 @@ function filterFields(data: unknown, fields: string[]): unknown {
   }
 
   if (data !== null && typeof data === "object") {
+    // Miniflux entry lists are wrapped as {total, entries: [...]}. Apply the
+    // field filter inside entries and preserve total so callers can paginate.
+    const record = data as Record<string, unknown>;
+    if (Array.isArray(record.entries) && typeof record.total === "number") {
+      return {
+        total: record.total,
+        entries: filterFields(record.entries, fields),
+      };
+    }
+
     const filtered: Record<string, unknown> = {};
     for (const field of fields) {
       if (field in data) {
-        filtered[field] = (data as Record<string, unknown>)[field];
+        filtered[field] = record[field];
       }
     }
     return filtered;

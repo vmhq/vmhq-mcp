@@ -213,6 +213,42 @@ describe("callService", () => {
     });
   });
 
+  test("applies fields inside {total, entries} wrapper and preserves total", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          total: 42,
+          entries: [
+            { id: 1, title: "First", url: "https://a", content: "long" },
+            { id: 2, title: "Second", url: "https://b", content: "long" },
+          ],
+        });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    const result = await callService(
+      service,
+      { method: "GET", path: "/entries", fields: ["id", "title"] },
+      { timeoutMs: 1_000 },
+    );
+
+    expect(result).toMatchObject({
+      response: {
+        ok: true,
+        body: {
+          total: 42,
+          entries: [
+            { id: 1, title: "First" },
+            { id: 2, title: "Second" },
+          ],
+        },
+      },
+    });
+  });
+
   test("returns normalized missing credential error", async () => {
     delete process.env.MINIFLUX_TOKEN;
     const result = await callService(
