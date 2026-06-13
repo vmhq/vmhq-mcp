@@ -169,11 +169,22 @@ https://mcp.example.com/mcp
 
 Leave the advanced OAuth Client ID and OAuth Client Secret fields empty. The server publishes OAuth metadata and supports public Dynamic Client Registration at `/oauth/register`, so Claude can register itself and obtain a token automatically before authorization.
 
-In the browser authorization form, enter your server `MCP_ACCESS_TOKEN` (not an OAuth access token). After you click **Authorize**, you should briefly see a “Connected” page and then return to Claude automatically. If OAuth fails after a server reset or state wipe, remove the connector in Claude and add it again so it re-registers.
+When you click **Authorize**, the server redirects you to your **PocketID** instance to sign in (passkey). After a successful PocketID login you briefly see a “Connected” page and return to Claude automatically. If OAuth fails after a server reset or state wipe, remove the connector in Claude and add it again so it re-registers.
 
 Claude.ai registers `https://claude.ai/api/mcp/auth_callback` as its web redirect URI. Older clients may send `https://claude.ai/callback`; the server maps that alias to the canonical callback automatically.
 
-Do not paste `MCP_ACCESS_TOKEN` into Claude's advanced OAuth Client ID/Secret fields. That token is still available for clients that support direct bearer tokens, such as `curl` testing or Codex-style configurations.
+`MCP_ACCESS_TOKEN` is still available as a direct bearer token for clients that support it (e.g. `curl` testing or Codex-style configurations). Do not paste it into Claude's advanced OAuth Client ID/Secret fields.
+
+### PocketID setup
+
+The interactive OAuth login delegates user authentication to a self-hosted [PocketID](https://pocket-id.org/docs/introduction) instance via OIDC. The MCP server stays the OAuth authorization server toward MCP clients (DCR + PKCE + token issuance); it adds PocketID only as the upstream identity provider for the human login step.
+
+1. In PocketID, create a new **OIDC client** for vmhq-mcp.
+2. Register the callback/redirect URI: `<MCP_PUBLIC_URL>/oauth/callback` (e.g. `https://mcp.example.com/oauth/callback`).
+3. Restrict who can sign in by assigning the allowed user groups to that OIDC client in PocketID.
+4. Copy the generated **Client ID** and **Client Secret** into `POCKETID_CLIENT_ID` / `POCKETID_CLIENT_SECRET`, and set `POCKETID_ISSUER` to your PocketID base URL.
+
+If the `POCKETID_*` vars are not set, the interactive `/oauth/authorize` flow returns an error page; the static `MCP_ACCESS_TOKEN` bearer still works for machine access.
 
 ## MCP tools
 

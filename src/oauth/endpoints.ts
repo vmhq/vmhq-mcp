@@ -17,7 +17,8 @@ import {
   clients,
   codes,
   CODE_TTL_MS,
-  constantTimeEqual,
+  pendingAuth,
+  PENDING_TTL_MS,
   pruneExpiredOAuthState,
   saveState,
   sha256,
@@ -31,13 +32,20 @@ import {
 } from "./redirectUri.js";
 import {
   buildAuthorizationRedirectUrl,
-  renderAuthorizeForm,
+  renderAuthorizeError,
   renderAuthorizeSuccess,
 } from "./views.js";
+import {
+  buildPocketIdAuthUrl,
+  exchangePocketIdCode,
+  type PocketIdConfig,
+} from "./pocketid.js";
 
 export type OAuthConfig = {
   publicUrl?: string;
   iconUrl?: string;
+  /** PocketID identity provider. When unset, interactive authorization is disabled. */
+  pocketId?: PocketIdConfig;
 };
 
 // ─── CORS headers (required for browser-based OAuth discovery) ────────────────
@@ -60,6 +68,11 @@ function baseUrl(config: OAuthConfig, req: Request): string {
 
 export function mcpUrl(config: OAuthConfig, req: Request): string {
   return `${baseUrl(config, req)}/mcp`;
+}
+
+/** Redirect URI registered with PocketID for this server (the OIDC callback). */
+function callbackUri(config: OAuthConfig, req: Request): string {
+  return `${baseUrl(config, req)}/oauth/callback`;
 }
 
 // ─── Discovery metadata ───────────────────────────────────────────────────────
@@ -158,25 +171,6 @@ export async function registerClient(req: Request): Promise<Response> {
   );
 }
 
-// ─── GET /oauth/authorize ─────────────────────────────────────────────────────
-
-export function authorizeForm(req: Request, _config: OAuthConfig): Response {
-  const url = new URL(req.url);
-  const get = (k: string) => url.searchParams.get(k) ?? "";
-  return renderAuthorizeForm({
-    clientId: get("client_id"),
-    redirectUri: get("redirect_uri"),
-    codeChallenge: get("code_challenge"),
-    codeChallengeMethod: get("code_challenge_method"),
-    state: get("state"),
-    scope: get("scope"),
-    resource: get("resource"),
-    error: get("error") || undefined,
-  });
-}
-
-// ─── POST /oauth/authorize ────────────────────────────────────────────────────
-
 async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
@@ -187,64 +181,150 @@ async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
   return Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 }
 
-export async function authorize(req: Request, serverToken: string, _config: OAuthConfig): Promise<Response> {
-  const form = await parseFormOrJson(req);
-  const {
-    token = "",
-    client_id: clientId = "",
-    redirect_uri: redirectUri = "",
-    code_challenge: codeChallenge = "",
-    code_challenge_method: codeChallengeMethod = "",
-    state = "",
-    scope = "mcp",
-    resource = "",
-  } = form;
+// ─── GET /oauth/authorize ─────────────────────────────────────────────────────
 
-  const formCtx = { clientId, redirectUri, codeChallenge, codeChallengeMethod, state, scope, resource };
-
-  // 1. Validate the server secret the user typed
-  if (!constantTimeEqual(token, serverToken)) {
-    log("info", "oauth_authorize_invalid_token", { clientId });
-    return renderAuthorizeForm({ ...formCtx, error: "1" });
+/**
+ * Entry point for the MCP client's authorization request. Validates the client,
+ * redirect URI, and PKCE, stores a pending transaction, then redirects the
+ * browser to PocketID for the actual user authentication. PocketID returns to
+ * GET /oauth/callback once the user signs in.
+ */
+export async function beginAuthorize(req: Request, config: OAuthConfig): Promise<Response> {
+  if (!config.pocketId) {
+    log("error", "oauth_pocketid_not_configured", {});
+    return renderAuthorizeError(
+      "Identity provider is not configured. Set POCKETID_ISSUER, POCKETID_CLIENT_ID and POCKETID_CLIENT_SECRET.",
+    );
   }
 
-  // 2. Client must exist and redirect URI must be registered (port-agnostic for loopback)
+  const url = new URL(req.url);
+  const get = (k: string) => url.searchParams.get(k) ?? "";
+  const clientId = get("client_id");
+  const redirectUri = get("redirect_uri");
+  const codeChallenge = get("code_challenge");
+  const codeChallengeMethod = get("code_challenge_method");
+  const state = get("state");
+  const scope = get("scope") || "mcp";
+  const resource = get("resource");
+
+  // 1. Client must exist and redirect URI must be registered (port-agnostic for loopback)
   const client = clients.get(clientId);
   if (!client) {
     log("error", "oauth_authorize_client_not_found", { clientId });
-    return renderAuthorizeForm({ ...formCtx, error: "client_not_found" });
+    return renderAuthorizeError(
+      "This client is no longer registered. Please remove this MCP server from your client and re-add it to trigger fresh registration.",
+    );
   }
   const matchedUri = client.redirectUris.find((r) => redirectUriMatches(redirectUri, r));
   if (!matchedUri || !isRegistrableRedirectUri(redirectUri)) {
     log("error", "oauth_authorize_invalid_redirect_uri", { clientId, redirectUri });
-    return renderAuthorizeForm({ ...formCtx, error: "invalid_redirect_uri" });
+    return renderAuthorizeError("The redirect URI is not registered for this client.");
   }
 
-  // 3. PKCE: must be S256
+  // 2. PKCE: must be S256
   if (!codeChallenge || codeChallengeMethod !== "S256") {
     log("error", "oauth_authorize_invalid_pkce", { clientId });
-    return renderAuthorizeForm({ ...formCtx, error: "invalid_pkce" });
+    return renderAuthorizeError("PKCE validation failed. The client must use the S256 code challenge method.");
   }
 
-  // 4. Issue authorization code
+  // 3. Stash the pending request and redirect the user to PocketID
   pruneExpiredOAuthState();
 
-  const code = randomBytes(24).toString("base64url");
-  const scopes = scope ? scope.split(/\s+/).filter(Boolean) : ["mcp"];
-
-  codes.set(code, {
+  const txn = randomBytes(24).toString("base64url");
+  const pkceVerifier = randomBytes(32).toString("base64url");
+  pendingAuth.set(txn, {
     clientId,
     redirectUri,
     codeChallenge,
-    scopes,
+    state,
+    scopes: scope.split(/\s+/).filter(Boolean),
     resource: resource || undefined,
+    pkceVerifier,
+    expiresAt: Date.now() + PENDING_TTL_MS,
+  });
+  saveState();
+
+  let authUrl: string;
+  try {
+    authUrl = await buildPocketIdAuthUrl(config.pocketId, callbackUri(config, req), {
+      state: txn,
+      codeChallenge: sha256(pkceVerifier),
+    });
+  } catch (err) {
+    pendingAuth.delete(txn);
+    saveState();
+    log("error", "oauth_pocketid_discovery_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return renderAuthorizeError("Could not reach the identity provider. Please try again later.");
+  }
+
+  log("info", "oauth_pocketid_redirect", { clientId });
+  return Response.redirect(authUrl, 302);
+}
+
+// ─── GET /oauth/callback ──────────────────────────────────────────────────────
+
+/**
+ * PocketID redirects here after the user authenticates. Exchanges the PocketID
+ * code, then issues our own authorization code bound to the original MCP client
+ * request and redirects the browser back to the MCP client's redirect URI.
+ */
+export async function oauthCallback(req: Request, config: OAuthConfig): Promise<Response> {
+  const url = new URL(req.url);
+  const code = url.searchParams.get("code") ?? "";
+  const txn = url.searchParams.get("state") ?? "";
+  const providerError = url.searchParams.get("error");
+
+  if (providerError) {
+    log("error", "oauth_pocketid_returned_error", { error: providerError });
+    return renderAuthorizeError("The identity provider denied the sign-in request.");
+  }
+
+  // Single-use: consume the pending transaction immediately
+  const pending = pendingAuth.get(txn);
+  if (pending) { pendingAuth.delete(txn); saveState(); }
+
+  if (!pending || pending.expiresAt < Date.now()) {
+    log("error", "oauth_callback_unknown_transaction", {});
+    return renderAuthorizeError("Your sign-in session expired or is invalid. Please try connecting again.");
+  }
+  if (!code) {
+    return renderAuthorizeError("Missing authorization code from the identity provider.");
+  }
+  if (!config.pocketId) {
+    return renderAuthorizeError("Identity provider is not configured.");
+  }
+
+  const result = await exchangePocketIdCode(
+    config.pocketId,
+    callbackUri(config, req),
+    code,
+    pending.pkceVerifier,
+  );
+  if (!result.ok) {
+    log("error", "oauth_pocketid_exchange_failed", { error: result.error });
+    return renderAuthorizeError("Sign-in with the identity provider failed. Please try again.");
+  }
+
+  // Issue our own authorization code bound to the original MCP client request
+  const mcpCode = randomBytes(24).toString("base64url");
+  codes.set(mcpCode, {
+    clientId: pending.clientId,
+    redirectUri: pending.redirectUri,
+    codeChallenge: pending.codeChallenge,
+    scopes: pending.scopes.length ? pending.scopes : ["mcp"],
+    resource: pending.resource,
     expiresAt: Date.now() + CODE_TTL_MS,
   });
   saveState();
 
-  const redirectUrl = buildAuthorizationRedirectUrl(redirectUri, code, state);
+  const redirectUrl = buildAuthorizationRedirectUrl(pending.redirectUri, mcpCode, pending.state);
 
-  log("info", "oauth_authorization_code_issued", { clientId, redirectHost: new URL(redirectUrl).host });
+  log("info", "oauth_authorization_code_issued", {
+    clientId: pending.clientId,
+    redirectHost: new URL(redirectUrl).host,
+  });
   return renderAuthorizeSuccess(redirectUrl);
 }
 
