@@ -80,6 +80,18 @@ MCP_PUBLIC_URL=https://mcp.example.com
 MCP_ICON_URL=https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png
 MCP_ACCESS_TOKEN=change-me
 
+# PocketID identity provider (interactive OAuth login)
+# When all three are set, the OAuth authorize flow delegates user authentication
+# to your PocketID instance. The static MCP_ACCESS_TOKEN bearer keeps working
+# for machine-to-machine access. In PocketID, create an OIDC client and register
+# this redirect/callback URI: <MCP_PUBLIC_URL>/oauth/callback
+# Restrict who can sign in via the OIDC client's allowed groups in PocketID.
+POCKETID_ISSUER=https://id.example.com
+POCKETID_CLIENT_ID=
+POCKETID_CLIENT_SECRET=
+# Optional OIDC scopes (space-separated). Defaults to "openid profile email".
+# POCKETID_SCOPES=openid profile email
+
 # Service base URLs
 # Leave a URL empty to disable that service.
 HOME_ASSISTANT_BASE_URL=https://home-assistant.example.com
