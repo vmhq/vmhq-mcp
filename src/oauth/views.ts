@@ -1,4 +1,4 @@
-/** HTML views for the OAuth authorization flow (login form + success page). */
+/** HTML views for the OAuth authorization flow (error + success pages). */
 import { canonicalRedirectUri } from "./redirectUri.js";
 
 function escapeHtml(s: string): string {
@@ -21,67 +21,34 @@ const SUCCESS_PAGE_CSP = {
   "X-Frame-Options": "DENY",
 } as const;
 
-const ERROR_MESSAGES: Record<string, string> = {
-  "1": "Invalid token. Please try again.",
-  client_not_found: "This client is no longer registered. Please remove this MCP server from Claude.ai and re-add it to trigger fresh registration.",
-  invalid_redirect_uri: "The redirect URI is not registered for this client.",
-  invalid_pkce: "PKCE validation failed. The client must use S256 code challenge method.",
-};
-
-export function renderAuthorizeForm(p: {
-  clientId: string;
-  redirectUri: string;
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  state: string;
-  scope: string;
-  resource: string;
-  error?: string;
-}): Response {
-  const errorMsg = p.error ? (ERROR_MESSAGES[p.error] ?? "An error occurred. Please try again.") : "";
-
+/**
+ * Error page shown when the authorization flow cannot proceed (bad client,
+ * redirect URI, PKCE, or an identity-provider failure). Always a 400.
+ */
+export function renderAuthorizeError(message: string): Response {
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Authorize — vmhq-mcp</title>
+  <title>Authorization error — vmhq-mcp</title>
   <style>
     body{font-family:system-ui,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
     .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:2rem;width:100%;max-width:420px}
-    h1{margin:0 0 .5rem;font-size:1.25rem}
-    p{margin:0 0 1.5rem;color:#888;font-size:.9rem}
-    label{display:block;margin-bottom:.4rem;font-size:.85rem;color:#aaa}
-    input[type=password]{width:100%;box-sizing:border-box;padding:.6rem .8rem;border-radius:8px;border:1px solid #333;background:#111;color:#e0e0e0;font-size:1rem;outline:none}
-    input[type=password]:focus{border-color:#555}
-    button{margin-top:1rem;width:100%;padding:.7rem;border-radius:8px;border:none;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
-    button:hover{background:#2563eb}
-    .error{background:#3f1212;border:1px solid #7f2020;border-radius:8px;color:#fca5a5;font-size:.9rem;padding:.75rem 1rem;margin-bottom:1.25rem;line-height:1.4}
+    h1{margin:0 0 .5rem;font-size:1.25rem;color:#fca5a5}
+    p{margin:0;color:#aaa;font-size:.95rem;line-height:1.5}
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>vmhq-mcp</h1>
-    <p>Enter your access token to authorize this connection.</p>
-    ${errorMsg ? `<div class="error">${escapeHtml(errorMsg)}</div>` : ""}
-    <form method="POST" action="/oauth/authorize">
-      <input type="hidden" name="client_id" value="${escapeHtml(p.clientId)}">
-      <input type="hidden" name="redirect_uri" value="${escapeHtml(p.redirectUri)}">
-      <input type="hidden" name="code_challenge" value="${escapeHtml(p.codeChallenge)}">
-      <input type="hidden" name="code_challenge_method" value="${escapeHtml(p.codeChallengeMethod)}">
-      <input type="hidden" name="state" value="${escapeHtml(p.state)}">
-      <input type="hidden" name="scope" value="${escapeHtml(p.scope)}">
-      <input type="hidden" name="resource" value="${escapeHtml(p.resource)}">
-      <label for="token">Access Token</label>
-      <input type="password" id="token" name="token" autofocus placeholder="vmhq_…" autocomplete="current-password">
-      <button type="submit">Authorize</button>
-    </form>
+    <h1>Authorization error</h1>
+    <p>${escapeHtml(message)}</p>
   </div>
 </body>
 </html>`;
 
   return new Response(html, {
-    status: errorMsg ? 400 : 200,
+    status: 400,
     headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
   });
 }

@@ -5,11 +5,11 @@ import { log } from "./logger.js";
 import { generateOpenApiSpec, renderSwaggerUI } from "./openapi.js";
 import {
   authorizationServerMetadata,
-  authorize,
-  authorizeForm,
+  beginAuthorize,
   constantTimeEqual,
   exchangeToken,
   OAUTH_CORS_HEADERS,
+  oauthCallback,
   protectedResourceMetadata,
   registerClient,
   revokeToken,
@@ -29,7 +29,7 @@ function rateLimited(req: Request, bucket: string): Response {
 }
 
 const config = loadConfig();
-const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl };
+const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl, pocketId: config.pocketId };
 
 function bearerToken(req: Request): string {
   const authorization = req.headers.get("authorization") ?? "";
@@ -123,14 +123,17 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-      return secureResponse(authorizeForm(req, oauthConfig));
-    }
-
-    if (url.pathname === "/oauth/authorize" && req.method === "POST") {
       if (!checkRateLimit(req, "oauth_authorize")) {
         return secureResponse(rateLimited(req, "oauth_authorize"));
       }
-      return secureResponse(await authorize(req, config.accessToken, oauthConfig));
+      return secureResponse(await beginAuthorize(req, oauthConfig));
+    }
+
+    if (url.pathname === "/oauth/callback" && req.method === "GET") {
+      if (!checkRateLimit(req, "oauth_authorize")) {
+        return secureResponse(rateLimited(req, "oauth_authorize"));
+      }
+      return secureResponse(await oauthCallback(req, oauthConfig));
     }
 
     if (url.pathname === "/oauth/token" && req.method === "POST") {

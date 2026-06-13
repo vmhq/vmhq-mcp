@@ -35,10 +35,34 @@ export type StoredToken = {
   expiresAt: number;
 };
 
+/**
+ * A pending authorization while the user is being redirected through PocketID.
+ * Created at GET /oauth/authorize, consumed at GET /oauth/callback. Keyed by an
+ * opaque transaction id that is passed to PocketID as its `state` parameter.
+ */
+export type PendingAuth = {
+  /** The MCP client (Claude.ai, Cursor, …) that initiated the authorization. */
+  clientId: string;
+  /** Redirect URI the MCP client expects the final code on. */
+  redirectUri: string;
+  /** The MCP client's PKCE S256 challenge (verified at token exchange). */
+  codeChallenge: string;
+  /** The MCP client's opaque `state`, echoed back on the final redirect. */
+  state: string;
+  scopes: string[];
+  /** RFC 8707 resource indicator (optional) */
+  resource?: string;
+  /** PKCE verifier for the PocketID leg of the flow. */
+  pkceVerifier: string;
+  expiresAt: number;
+};
+
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
 export const clients = new Map<string, RegisteredClient>();
 export const codes = new Map<string, AuthorizationCode>();
+/** transaction id → PendingAuth (PocketID round-trip) */
+export const pendingAuth = new Map<string, PendingAuth>();
 /** token SHA-256 hash → StoredToken */
 export const accessTokens = new Map<string, StoredToken>();
 
@@ -46,6 +70,7 @@ export const accessTokens = new Map<string, StoredToken>();
 
 const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json";
 export const CODE_TTL_MS = 5 * 60 * 1000;          // 5 min
+export const PENDING_TTL_MS = 10 * 60 * 1000;      // 10 min (PocketID round-trip)
 export const TOKEN_TTL_S = 60 * 60 * 24 * 90;      // 90 days
 
 export function sha256(value: string): string {
@@ -64,6 +89,7 @@ function loadState(): void {
     const saved = JSON.parse(raw) as {
       clients?: Array<[string, RegisteredClient]>;
       authorizationCodes?: Array<[string, AuthorizationCode]>;
+      pendingAuth?: Array<[string, PendingAuth]>;
       accessTokens?: Array<[string, StoredToken | number]>;
     };
 
@@ -75,6 +101,12 @@ function loadState(): void {
     if (Array.isArray(saved.authorizationCodes)) {
       for (const [code, ac] of saved.authorizationCodes) {
         if (ac.expiresAt > now) codes.set(code, ac);
+      }
+    }
+
+    if (Array.isArray(saved.pendingAuth)) {
+      for (const [txn, p] of saved.pendingAuth) {
+        if (p.expiresAt > now) pendingAuth.set(txn, p);
       }
     }
 
@@ -101,6 +133,7 @@ export function saveState(): void {
     const payload = {
       clients: [...clients.entries()],
       authorizationCodes: [...codes.entries()],
+      pendingAuth: [...pendingAuth.entries()],
       accessTokens: [...accessTokens.entries()],
     };
     const tmp = `${STATE_PATH}.tmp`;
@@ -119,6 +152,9 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   for (const [code, ac] of codes) {
     if (ac.expiresAt <= now) { codes.delete(code); dirty = true; }
   }
+  for (const [txn, p] of pendingAuth) {
+    if (p.expiresAt <= now) { pendingAuth.delete(txn); dirty = true; }
+  }
   for (const [hash, tok] of accessTokens) {
     if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
   }
@@ -130,6 +166,7 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
 export function reloadPersistedOAuthState(): void {
   clients.clear();
   codes.clear();
+  pendingAuth.clear();
   accessTokens.clear();
   loadState();
 }

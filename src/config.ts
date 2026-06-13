@@ -1,5 +1,6 @@
 import type { ServiceDefinition } from "./services.js";
 import { serviceFromRegistryEntry, SERVICE_REGISTRY } from "./serviceRegistry.js";
+import type { PocketIdConfig } from "./oauth.js";
 
 function readEnv(name: string, fallback?: string): string {
   return process.env[name] ?? fallback ?? "";
@@ -36,7 +37,22 @@ export type AppConfig = {
   upstreamTimeoutMs: number;
   services: ServiceDefinition[];
   pinnedHaEntities: PinnedHaEntity[];
+  /** PocketID identity provider for the interactive OAuth flow (optional). */
+  pocketId?: PocketIdConfig;
 };
+
+function loadPocketIdConfig(): PocketIdConfig | undefined {
+  const issuer = readEnv("POCKETID_ISSUER").replace(/\/$/, "");
+  const clientId = readEnv("POCKETID_CLIENT_ID");
+  const clientSecret = readEnv("POCKETID_CLIENT_SECRET");
+  if (!issuer || !clientId || !clientSecret) return undefined;
+
+  const scopes = readEnv("POCKETID_SCOPES", "openid profile email")
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return { issuer, clientId, clientSecret, scopes: scopes.length ? scopes : ["openid"] };
+}
 
 export function loadConfig(): AppConfig {
   const services = SERVICE_REGISTRY.map((entry) => serviceFromRegistryEntry(entry, readEnv)).filter(
@@ -65,5 +81,6 @@ export function loadConfig(): AppConfig {
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
     services,
     pinnedHaEntities,
+    pocketId: loadPocketIdConfig(),
   };
 }

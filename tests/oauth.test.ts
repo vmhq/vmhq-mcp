@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -8,14 +8,64 @@ type OAuthModule = typeof import("../src/oauth.js");
 const statePath = join(import.meta.dir, ".oauth-test-state.json");
 let oauth: OAuthModule;
 
+// ─── PocketID (OIDC provider) mock ──────────────────────────────────────────────
+// The bridge flow calls PocketID's discovery + token endpoints via global fetch.
+// We stub fetch so the suite runs offline and we control success/failure.
+
+const POCKETID_ISSUER = "https://id.example.com";
+const POCKETID_AUTHORIZE = `${POCKETID_ISSUER}/authorize`;
+const POCKETID_TOKEN = `${POCKETID_ISSUER}/token`;
+
+const testConfig = {
+  publicUrl: "https://mcp.example.com",
+  pocketId: {
+    issuer: POCKETID_ISSUER,
+    clientId: "mcp-client",
+    clientSecret: "mcp-secret",
+    scopes: ["openid", "profile", "email"],
+  },
+};
+
+/** When set, the mocked PocketID token endpoint returns an error. */
+let pocketIdTokenShouldFail = false;
+const originalFetch = globalThis.fetch;
+
+function installPocketIdMock(): void {
+  // @ts-expect-error - test stub matches the subset of fetch we use
+  globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (urlStr.endsWith("/.well-known/openid-configuration")) {
+      return Response.json({
+        issuer: POCKETID_ISSUER,
+        authorization_endpoint: POCKETID_AUTHORIZE,
+        token_endpoint: POCKETID_TOKEN,
+      });
+    }
+    if (urlStr === POCKETID_TOKEN) {
+      if (pocketIdTokenShouldFail) {
+        return Response.json({ error: "invalid_grant" }, { status: 400 });
+      }
+      return Response.json({ access_token: "pocket-access", id_token: "pocket-id", token_type: "Bearer" });
+    }
+    throw new Error(`unexpected fetch in test: ${urlStr}`);
+  };
+}
+
 beforeAll(async () => {
   rmSync(statePath, { force: true });
   process.env.MCP_LOG_LEVEL = "silent";
   process.env.MCP_OAUTH_STATE_PATH = statePath;
+  installPocketIdMock();
   oauth = await import("../src/oauth.js");
 });
 
+beforeEach(() => {
+  pocketIdTokenShouldFail = false;
+  oauth.resetPocketIdDiscoveryCache();
+});
+
 afterAll(() => {
+  globalThis.fetch = originalFetch;
   rmSync(statePath, { force: true });
   rmSync(`${statePath}.tmp`, { force: true });
 });
@@ -45,10 +95,54 @@ function formRequest(url: string, fields: Record<string, string>): Request {
   });
 }
 
+function authorizeRequest(fields: Record<string, string>): Request {
+  const u = new URL("https://mcp.example.com/oauth/authorize");
+  for (const [k, v] of Object.entries(fields)) u.searchParams.set(k, v);
+  return new Request(u.toString());
+}
+
 function redirectUrlFromSuccessPage(html: string): string {
   const match = html.match(/content="0;url=([^"]+)"/);
   if (!match) throw new Error("success page missing redirect URL");
   return match[1].replace(/&amp;/g, "&");
+}
+
+/**
+ * Drive the full bridge flow: GET /oauth/authorize → PocketID redirect →
+ * GET /oauth/callback → MCP authorization code. Returns the issued MCP code.
+ */
+async function authorizeViaPocketId(opts: {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge: string;
+  state?: string;
+  scope?: string;
+  resource?: string;
+}): Promise<{ code: string; finalState: string | null }> {
+  const fields: Record<string, string> = {
+    client_id: opts.clientId,
+    redirect_uri: opts.redirectUri,
+    code_challenge: opts.codeChallenge,
+    code_challenge_method: "S256",
+    state: opts.state ?? "abc",
+  };
+  if (opts.scope) fields.scope = opts.scope;
+  if (opts.resource) fields.resource = opts.resource;
+
+  const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
+  expect(beginRes.status).toBe(302);
+  const location = beginRes.headers.get("location")!;
+  expect(location).toContain(POCKETID_AUTHORIZE);
+  const txn = new URL(location).searchParams.get("state")!;
+  expect(txn).toBeTruthy();
+
+  const cbRes = await oauth.oauthCallback(
+    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+    testConfig,
+  );
+  expect(cbRes.status).toBe(200);
+  const finalUrl = new URL(redirectUrlFromSuccessPage(await cbRes.text()));
+  return { code: finalUrl.searchParams.get("code")!, finalState: finalUrl.searchParams.get("state") };
 }
 
 // Full authorize → token exchange flow
@@ -63,24 +157,13 @@ async function fullFlow(opts: {
   const verifier = opts.verifier ?? "correct-horse-battery-staple";
   const challenge = s256(verifier);
 
-  const fields: Record<string, string> = {
-    token: "server-secret",
-    client_id: clientId,
-    redirect_uri: opts.redirectUri,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state: "abc",
-  };
-  if (opts.scope) fields.scope = opts.scope;
-  if (opts.resource) fields.resource = opts.resource;
-
-  const authRes = await oauth.authorize(
-    formRequest("https://mcp.example.com/oauth/authorize", fields),
-    "server-secret",
-    {},
-  );
-  expect(authRes.status).toBe(200);
-  const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+  const { code } = await authorizeViaPocketId({
+    clientId,
+    redirectUri: opts.redirectUri,
+    codeChallenge: challenge,
+    scope: opts.scope,
+    resource: opts.resource,
+  });
   expect(code).toBeTruthy();
 
   const tokenFields: Record<string, string> = {
@@ -181,106 +264,114 @@ describe("client registration", () => {
   });
 });
 
-// ─── Authorization form ───────────────────────────────────────────────────────
+// ─── GET /oauth/authorize (redirect to PocketID) ──────────────────────────────
 
-describe("authorization form", () => {
-  test("includes required security headers", () => {
-    const res = oauth.authorizeForm(new Request("https://mcp.example.com/oauth/authorize"), {});
-    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
-    expect(res.headers.get("x-frame-options")).toBe("DENY");
-    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
-  });
-
-  test("uses relative form action (works behind any reverse proxy)", async () => {
-    for (const url of [
-      "https://mcp.example.com/oauth/authorize",
-      "http://127.0.0.1:3000/oauth/authorize",
-    ]) {
-      const res = oauth.authorizeForm(new Request(url), { publicUrl: "https://mcp.public.example.com" });
-      expect(await res.text()).toContain('action="/oauth/authorize"');
-    }
-  });
-
-  test("renders error messages from query param", async () => {
-    const cases = [
-      { error: "1", expected: "Invalid token" },
-      { error: "client_not_found", expected: "no longer registered" },
-      { error: "invalid_redirect_uri", expected: "redirect URI is not registered" },
-      { error: "invalid_pkce", expected: "PKCE validation failed" },
-    ];
-    for (const { error, expected } of cases) {
-      const res = oauth.authorizeForm(
-        new Request(`https://mcp.example.com/oauth/authorize?error=${error}`),
-        {},
-      );
-      expect(await res.text()).toContain(expected);
-    }
-  });
-
-  test("preserves resource and scope hidden fields", async () => {
-    const res = oauth.authorizeForm(
-      new Request(
-        "https://mcp.example.com/oauth/authorize?resource=https%3A%2F%2Fmcp.example.com%2Fmcp&scope=mcp",
-      ),
-      {},
-    );
-    const html = await res.text();
-    expect(html).toContain('name="resource"');
-    expect(html).toContain('name="scope"');
-  });
-});
-
-// ─── POST /oauth/authorize ────────────────────────────────────────────────────
-
-describe("POST /oauth/authorize", () => {
-  test("renders form with error=1 on wrong token", async () => {
-    const res = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "wrong",
-        client_id: "vmhq_test",
-        redirect_uri: "https://client.example.com/callback",
-        code_challenge: "c",
+describe("GET /oauth/authorize", () => {
+  test("redirects to PocketID with PKCE and a transaction state", async () => {
+    const redirectUri = "https://client.example.com/callback";
+    const clientId = await register(redirectUri);
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
         code_challenge_method: "S256",
+        state: "client-state",
       }),
-      "server-secret",
-      {},
+      testConfig,
+    );
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("location")!);
+    expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
+    expect(location.searchParams.get("client_id")).toBe("mcp-client");
+    expect(location.searchParams.get("redirect_uri")).toBe("https://mcp.example.com/oauth/callback");
+    expect(location.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(location.searchParams.get("code_challenge")).toBeTruthy();
+    expect(location.searchParams.get("state")).toBeTruthy();
+  });
+
+  test("errors when PocketID is not configured", async () => {
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({ client_id: "vmhq_x", redirect_uri: "https://x/cb", code_challenge: "c", code_challenge_method: "S256" }),
+      { publicUrl: "https://mcp.example.com" },
     );
     expect(res.status).toBe(400);
-    expect(await res.text()).toContain("Invalid token");
+    expect(await res.text()).toContain("not configured");
   });
 
-  test("renders form with client_not_found error when client is unknown", async () => {
-    const res = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
+  test("errors with client_not_found when client is unknown", async () => {
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
         client_id: "vmhq_nonexistent",
         redirect_uri: "https://client.example.com/callback",
         code_challenge: "c",
         code_challenge_method: "S256",
       }),
-      "server-secret",
-      {},
+      testConfig,
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("no longer registered");
   });
 
-  test("renders form with invalid_pkce error when PKCE is absent or not S256", async () => {
+  test("errors with invalid PKCE when challenge absent or not S256", async () => {
     const redirectUri = "https://client.example.com/callback";
     const clientId = await register(redirectUri);
-    const res = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
         client_id: clientId,
         redirect_uri: redirectUri,
         code_challenge: "",
         code_challenge_method: "",
       }),
-      "server-secret",
-      {},
+      testConfig,
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("PKCE validation failed");
+  });
+});
+
+// ─── GET /oauth/callback ──────────────────────────────────────────────────────
+
+describe("GET /oauth/callback", () => {
+  test("errors on unknown transaction", async () => {
+    const res = await oauth.oauthCallback(
+      new Request("https://mcp.example.com/oauth/callback?code=x&state=does-not-exist"),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("expired");
+  });
+
+  test("errors when PocketID returns an error param", async () => {
+    const res = await oauth.oauthCallback(
+      new Request("https://mcp.example.com/oauth/callback?error=access_denied&state=whatever"),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("denied");
+  });
+
+  test("errors when PocketID token exchange fails", async () => {
+    const redirectUri = "https://client.example.com/callback";
+    const clientId = await register(redirectUri);
+    const beginRes = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+      }),
+      testConfig,
+    );
+    const txn = new URL(beginRes.headers.get("location")!).searchParams.get("state")!;
+
+    pocketIdTokenShouldFail = true;
+    const res = await oauth.oauthCallback(
+      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("failed");
   });
 });
 
@@ -310,18 +401,8 @@ describe("authorization code flow", () => {
     const redirectUri = "https://persist.example.com/cb";
     const clientId = await register(redirectUri);
     const verifier = "persist-verifier-restart";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-      }),
-      "server-secret",
-      {},
-    );
-    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+    const { code } = await authorizeViaPocketId({ clientId, redirectUri, codeChallenge: s256(verifier) });
+
     const saved = JSON.parse(readFileSync(statePath, "utf-8")) as {
       authorizationCodes?: Array<[string, unknown]>;
     };
@@ -345,18 +426,7 @@ describe("authorization code flow", () => {
     const redirectUri = "https://once.example.com/cb";
     const clientId = await register(redirectUri);
     const verifier = "single-use-verifier-abc";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-      }),
-      "server-secret",
-      {},
-    );
-    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+    const { code } = await authorizeViaPocketId({ clientId, redirectUri, codeChallenge: s256(verifier) });
     const baseFields = { grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: clientId, code_verifier: verifier };
 
     await oauth.exchangeToken(formRequest("https://mcp.example.com/oauth/token", baseFields));
@@ -364,41 +434,23 @@ describe("authorization code flow", () => {
     expect(replay.status).toBe(400);
   });
 
-  test("state is forwarded in redirect", async () => {
+  test("client state is forwarded in the final redirect", async () => {
     const redirectUri = "https://stateful.example.com/cb";
     const clientId = await register(redirectUri);
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256("v"),
-        code_challenge_method: "S256",
-        state: "xyz123",
-      }),
-      "server-secret",
-      {},
-    );
-    const redirectUrl = new URL(redirectUrlFromSuccessPage(await authRes.text()));
-    expect(redirectUrl.searchParams.get("state")).toBe("xyz123");
+    const { finalState } = await authorizeViaPocketId({
+      clientId,
+      redirectUri,
+      codeChallenge: s256("v"),
+      state: "xyz123",
+    });
+    expect(finalState).toBe("xyz123");
   });
 
   test("token exchange accepts JSON body", async () => {
     const redirectUri = "http://127.0.0.1:9876/callback";
     const clientId = await register(redirectUri);
     const verifier = "json-verifier-test";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-      }),
-      "server-secret",
-      {},
-    );
-    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+    const { code } = await authorizeViaPocketId({ clientId, redirectUri, codeChallenge: s256(verifier) });
 
     const tokenRes = await oauth.exchangeToken(
       new Request("https://mcp.example.com/oauth/token", {
@@ -419,25 +471,14 @@ describe("Claude web redirect URI", () => {
   test("success page redirects legacy claude.ai/callback to api/mcp/auth_callback", async () => {
     const clientId = await register("https://claude.ai/callback");
     const verifier = "claude-web-verifier";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: "https://claude.ai/callback",
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-        state: "claude-state",
-      }),
-      "server-secret",
-      {},
-    );
-    expect(authRes.status).toBe(200);
-    const redirectUrl = redirectUrlFromSuccessPage(await authRes.text());
-    expect(redirectUrl).toContain("https://claude.ai/api/mcp/auth_callback");
-    expect(redirectUrl).toContain("code=");
-    expect(redirectUrl).toContain("state=claude-state");
+    const { code, finalState } = await authorizeViaPocketId({
+      clientId,
+      redirectUri: "https://claude.ai/callback",
+      codeChallenge: s256(verifier),
+      state: "claude-state",
+    });
+    expect(finalState).toBe("claude-state");
 
-    const code = new URL(redirectUrl).searchParams.get("code")!;
     const tokenRes = await oauth.exchangeToken(
       formRequest("https://mcp.example.com/oauth/token", {
         grant_type: "authorization_code",
@@ -449,11 +490,30 @@ describe("Claude web redirect URI", () => {
     );
     expect(tokenRes.status).toBe(200);
   });
+
+  test("callback redirect URL uses the canonical Claude web callback host", async () => {
+    const clientId = await register("https://claude.ai/callback");
+    const fields = {
+      client_id: clientId,
+      redirect_uri: "https://claude.ai/callback",
+      code_challenge: s256("v"),
+      code_challenge_method: "S256",
+      state: "s",
+    };
+    const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
+    const txn = new URL(beginRes.headers.get("location")!).searchParams.get("state")!;
+    const cbRes = await oauth.oauthCallback(
+      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+      testConfig,
+    );
+    const redirectUrl = redirectUrlFromSuccessPage(await cbRes.text());
+    expect(redirectUrl).toContain("https://claude.ai/api/mcp/auth_callback");
+    expect(redirectUrl).toContain("code=");
+  });
 });
 
 describe("RFC 8252 loopback port-agnostic redirect URI matching", () => {
   test("token exchange succeeds when port differs from registered URI (native app ephemeral port)", async () => {
-    // Register with port 9000, authorize and exchange with 9001
     const { tokenRes } = await fullFlow({
       redirectUri: "http://127.0.0.1:9000/callback",
       tokenRedirectUri: "http://127.0.0.1:9001/callback",
@@ -463,33 +523,24 @@ describe("RFC 8252 loopback port-agnostic redirect URI matching", () => {
 
   test("authorize accepts loopback redirect URI with different port from registered", async () => {
     const clientId = await register("http://localhost:8000/cb");
-    const res = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: "http://localhost:8888/cb",
-        code_challenge: s256("verifier"),
-        code_challenge_method: "S256",
-      }),
-      "server-secret",
-      {},
-    );
-    expect(res.status).toBe(200);
-    expect(redirectUrlFromSuccessPage(await res.text())).toContain("code=");
+    const { code } = await authorizeViaPocketId({
+      clientId,
+      redirectUri: "http://localhost:8888/cb",
+      codeChallenge: s256("verifier"),
+    });
+    expect(code).toBeTruthy();
   });
 
   test("non-loopback URIs still require exact match", async () => {
     const clientId = await register("https://app.example.com/callback");
-    const res = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
         client_id: clientId,
         redirect_uri: "https://app.example.com/different",
         code_challenge: s256("verifier"),
         code_challenge_method: "S256",
       }),
-      "server-secret",
-      {},
+      testConfig,
     );
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("redirect URI is not registered");
@@ -515,19 +566,12 @@ describe("RFC 8707 resource indicators", () => {
     const redirectUri = "https://mismatch.example.com/cb";
     const clientId = await register(redirectUri);
     const verifier = "resource-mismatch-verifier";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-        resource: "https://mcp.example.com/mcp",
-      }),
-      "server-secret",
-      {},
-    );
-    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+    const { code } = await authorizeViaPocketId({
+      clientId,
+      redirectUri,
+      codeChallenge: s256(verifier),
+      resource: "https://mcp.example.com/mcp",
+    });
 
     const tokenRes = await oauth.exchangeToken(
       formRequest("https://mcp.example.com/oauth/token", {
@@ -549,19 +593,12 @@ describe("RFC 8707 resource indicators", () => {
     const redirectUri = "https://resource-match.example.com/cb";
     const clientId = await register(redirectUri);
     const verifier = "resource-match-verifier";
-    const authRes = await oauth.authorize(
-      formRequest("https://mcp.example.com/oauth/authorize", {
-        token: "server-secret",
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256(verifier),
-        code_challenge_method: "S256",
-        resource,
-      }),
-      "server-secret",
-      {},
-    );
-    const code = new URL(redirectUrlFromSuccessPage(await authRes.text())).searchParams.get("code")!;
+    const { code } = await authorizeViaPocketId({
+      clientId,
+      redirectUri,
+      codeChallenge: s256(verifier),
+      resource,
+    });
     const tokenRes = await oauth.exchangeToken(
       formRequest("https://mcp.example.com/oauth/token", {
         grant_type: "authorization_code",
