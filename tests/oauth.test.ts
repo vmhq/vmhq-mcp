@@ -107,6 +107,13 @@ function redirectUrlFromSuccessPage(html: string): string {
   return match[1].replace(/&amp;/g, "&");
 }
 
+/** Extract the PocketID sign-in URL from the intermediate consent page. */
+function pocketIdUrlFromConsentPage(html: string): string {
+  const match = html.match(/class="btn" href="([^"]+)"/);
+  if (!match) throw new Error("consent page missing PocketID sign-in URL");
+  return match[1].replace(/&amp;/g, "&");
+}
+
 /**
  * Drive the full bridge flow: GET /oauth/authorize → PocketID redirect →
  * GET /oauth/callback → MCP authorization code. Returns the issued MCP code.
@@ -130,10 +137,10 @@ async function authorizeViaPocketId(opts: {
   if (opts.resource) fields.resource = opts.resource;
 
   const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
-  expect(beginRes.status).toBe(302);
-  const location = beginRes.headers.get("location")!;
-  expect(location).toContain(POCKETID_AUTHORIZE);
-  const txn = new URL(location).searchParams.get("state")!;
+  expect(beginRes.status).toBe(200);
+  const pocketIdUrl = pocketIdUrlFromConsentPage(await beginRes.text());
+  expect(pocketIdUrl).toContain(POCKETID_AUTHORIZE);
+  const txn = new URL(pocketIdUrl).searchParams.get("state")!;
   expect(txn).toBeTruthy();
 
   const cbRes = await oauth.oauthCallback(
@@ -267,7 +274,7 @@ describe("client registration", () => {
 // ─── GET /oauth/authorize (redirect to PocketID) ──────────────────────────────
 
 describe("GET /oauth/authorize", () => {
-  test("redirects to PocketID with PKCE and a transaction state", async () => {
+  test("shows a consent page linking to PocketID with PKCE and a transaction state", async () => {
     const redirectUri = "https://client.example.com/callback";
     const clientId = await register(redirectUri);
     const res = await oauth.beginAuthorize(
@@ -280,8 +287,10 @@ describe("GET /oauth/authorize", () => {
       }),
       testConfig,
     );
-    expect(res.status).toBe(302);
-    const location = new URL(res.headers.get("location")!);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Sign in with PocketID");
+    const location = new URL(pocketIdUrlFromConsentPage(html));
     expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
     expect(location.searchParams.get("client_id")).toBe("mcp-client");
     expect(location.searchParams.get("redirect_uri")).toBe("https://mcp.example.com/oauth/callback");
@@ -363,7 +372,7 @@ describe("GET /oauth/callback", () => {
       }),
       testConfig,
     );
-    const txn = new URL(beginRes.headers.get("location")!).searchParams.get("state")!;
+    const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
 
     pocketIdTokenShouldFail = true;
     const res = await oauth.oauthCallback(
@@ -501,7 +510,7 @@ describe("Claude web redirect URI", () => {
       state: "s",
     };
     const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
-    const txn = new URL(beginRes.headers.get("location")!).searchParams.get("state")!;
+    const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
     const cbRes = await oauth.oauthCallback(
       new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
       testConfig,
