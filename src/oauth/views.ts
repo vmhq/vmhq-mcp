@@ -53,6 +53,47 @@ export function renderAuthorizeError(message: string): Response {
   });
 }
 
+/**
+ * Intermediate consent page shown before bouncing the user to PocketID. Instead
+ * of an immediate 302 redirect, the user lands on a branded page and clicks a
+ * single "Sign in with PocketID" button that links to the PocketID auth URL.
+ */
+export function renderAuthorizeConsent(
+  authUrl: string,
+  opts: { clientName?: string } = {},
+): Response {
+  const href = escapeHtml(authUrl);
+  const app = opts.clientName ? escapeHtml(opts.clientName) : "";
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — vmhq-mcp</title>
+  <style>
+    body{font-family:system-ui,-apple-system,sans-serif;background:#0c0c0c;color:#ededed;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+    .card{display:flex;flex-direction:column;align-items:center;gap:1.5rem;padding:2rem;width:100%;max-width:380px;text-align:center}
+    h1{margin:0;font-size:1.6rem;font-weight:600;letter-spacing:-.01em}
+    p{margin:0;color:#8a8a8a;font-size:.9rem;line-height:1.5}
+    .btn{display:block;width:100%;box-sizing:border-box;padding:.8rem 1rem;background:#000;color:#fff;border:1px solid #2a2a2a;border-radius:8px;font-size:.95rem;font-weight:500;text-decoration:none;transition:border-color .15s,background .15s}
+    .btn:hover{background:#161616;border-color:#3a3a3a}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>VMHQ</h1>
+    ${app ? `<p>${app} wants to connect to your MCP server.</p>` : ""}
+    <a class="btn" href="${href}">Sign in with PocketID</a>
+  </div>
+</body>
+</html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
+  });
+}
+
 export function buildAuthorizationRedirectUrl(redirectUri: string, code: string, state: string): string {
   const target = canonicalRedirectUri(redirectUri);
   const redirect = new URL(target);

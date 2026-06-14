@@ -32,6 +32,7 @@ import {
 } from "./redirectUri.js";
 import {
   buildAuthorizationRedirectUrl,
+  renderAuthorizeConsent,
   renderAuthorizeError,
   renderAuthorizeSuccess,
 } from "./views.js";
@@ -259,8 +260,8 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     return renderAuthorizeError("Could not reach the identity provider. Please try again later.");
   }
 
-  log("info", "oauth_pocketid_redirect", { clientId });
-  return Response.redirect(authUrl, 302);
+  log("info", "oauth_authorize_consent_shown", { clientId });
+  return renderAuthorizeConsent(authUrl, { clientName: client.clientName });
 }
 
 // ─── GET /oauth/callback ──────────────────────────────────────────────────────
