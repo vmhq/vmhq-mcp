@@ -5,7 +5,7 @@ export type ServiceId =
   | "searxng"
   | "proxmox"
   | "memos"
-  | "nextdns"
+  | "adguard"
   | "paperless";
 
 export type ServiceAuth =
