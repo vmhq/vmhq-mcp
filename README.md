@@ -12,7 +12,7 @@ The server protects the MCP endpoint with its own bearer token (`MCP_ACCESS_TOKE
 - SearXNG
 - Proxmox
 - Memos
-- NextDNS
+- AdGuard Home
 - Paperless-ngx
 
 Each service's real URL is configured only in `.env`. Every service is optional: if you don't define its `*_BASE_URL`, the MCP server starts normally and simply doesn't register that service's tools.
@@ -100,7 +100,7 @@ KARAKEEP_BASE_URL=https://karakeep.example.com
 SEARXNG_BASE_URL=https://searxng.example.com
 PROXMOX_BASE_URL=https://proxmox.example.com
 MEMOS_BASE_URL=https://memos.example.com
-NEXTDNS_BASE_URL=https://api.nextdns.io
+ADGUARD_BASE_URL=https://adguard.example.com
 PAPERLESS_BASE_URL=https://paperless.example.com
 
 # Service credentials
@@ -111,8 +111,8 @@ HOME_ASSISTANT_TOKEN=
 MINIFLUX_TOKEN=
 KARAKEEP_TOKEN=
 MEMOS_TOKEN=
-NEXTDNS_API_KEY=
-NEXTDNS_PROFILE_ID=your-profile-id
+ADGUARD_USERNAME=
+ADGUARD_PASSWORD=
 PAPERLESS_TOKEN=
 
 # Proxmox API token
@@ -211,7 +211,7 @@ For each service:
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
-- `nextdns_api_reference`, `nextdns_operation`, `nextdns_request`
+- `adguard_api_reference`, `adguard_operation`, `adguard_request`
 - `paperless_api_reference`, `paperless_operation`, `paperless_request`
 - `paperless_upload_start`, `paperless_upload_chunk`, `paperless_upload_finish`, `paperless_upload_abort` for chunked Paperless document uploads
 
@@ -300,5 +300,5 @@ The local catalogue was built from the official documentation reviewed on 2026-0
 - SearXNG Search API: https://docs.searxng.org/dev/search_api.html
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
-- NextDNS API: https://nextdns.io/api
+- AdGuard Home API (OpenAPI spec): https://github.com/AdguardTeam/AdGuardHome/tree/master/openapi
 - Paperless-ngx REST API: https://docs.paperless-ngx.com/api/

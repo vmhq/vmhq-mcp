@@ -1,6 +1,6 @@
 ---
 name: vmhq-mcp
-description: Use when the user asks to work with their personal VMHQ MCP services, including Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS.
+description: Use when the user asks to work with their personal VMHQ MCP services, including Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and AdGuard Home.
 ---
 
 # VMHQ MCP
@@ -15,7 +15,7 @@ Use the `vmhq` MCP server for personal infrastructure and self-hosted service ta
 - SearXNG: private metasearch.
 - Proxmox: VM and node operations.
 - Memos: notes and memo workflows.
-- NextDNS: DNS profile and analytics operations.
+- AdGuard Home: DNS filtering, query log, stats, and DHCP operations.
 
 ## Workflow
 

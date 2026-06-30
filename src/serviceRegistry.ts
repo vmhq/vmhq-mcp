@@ -43,6 +43,25 @@ function minifluxAuth(readEnv: (name: string, fallback?: string) => string): Ser
     : { type: "header", tokenEnv: "MINIFLUX_TOKEN", headerName: "X-Auth-Token" };
 }
 
+function adguardAuth(readEnv: (name: string, fallback?: string) => string): ServiceAuth {
+  const username = readEnv("ADGUARD_USERNAME");
+  const password = readEnv("ADGUARD_PASSWORD");
+
+  if (!username && !password) {
+    return { type: "none" };
+  }
+
+  if (!username || !password) {
+    throw new Error("ADGUARD_USERNAME and ADGUARD_PASSWORD must be configured together.");
+  }
+
+  return {
+    type: "static",
+    headerName: "Authorization",
+    value: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+  };
+}
+
 export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
   {
     id: "home_assistant",
@@ -94,16 +113,12 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     pingPath: "/api/v1/instance/profile",
   },
   {
-    id: "nextdns",
-    title: "NextDNS",
-    baseUrlEnv: "NEXTDNS_BASE_URL",
-    auth: { type: "header", tokenEnv: "NEXTDNS_API_KEY", headerName: "X-Api-Key" },
-    defaultPathPrefix: "/profiles/{profileId}",
-    defaultPathParams: (readEnv) => {
-      const profileId = readEnv("NEXTDNS_PROFILE_ID");
-      return profileId ? { profileId } : undefined;
-    },
-    pingPath: "/profiles",
+    id: "adguard",
+    title: "AdGuard Home",
+    baseUrlEnv: "ADGUARD_BASE_URL",
+    auth: adguardAuth,
+    defaultPathPrefix: "/control",
+    pingPath: "/control/status",
   },
   {
     id: "paperless",
