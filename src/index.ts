@@ -30,6 +30,7 @@ function rateLimited(req: Request, bucket: string): Response {
 
 const config = loadConfig();
 const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl, pocketId: config.pocketId };
+const iconSvg = await Bun.file(new URL("./assets/icon.svg", import.meta.url)).text();
 
 function bearerToken(req: Request): string {
   const authorization = req.headers.get("authorization") ?? "";
@@ -83,6 +84,15 @@ const httpServer = Bun.serve({
       path: url.pathname,
       requestId,
     });
+
+    if (url.pathname === "/icon.svg") {
+      return secureResponse(new Response(iconSvg, {
+        headers: {
+          "Content-Type": "image/svg+xml",
+          "Cache-Control": "public, max-age=86400",
+        },
+      }));
+    }
 
     if (url.pathname === "/health") {
       return secureResponse(json({

@@ -72,10 +72,15 @@ export function loadConfig(): AppConfig {
       })
     : [];
 
+  const publicUrl = readEnv("MCP_PUBLIC_URL") || undefined;
+  const defaultIconUrl = publicUrl
+    ? `${publicUrl.replace(/\/$/, "")}/icon.svg`
+    : "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lovable.svg";
+
   return {
     port: readNumberEnv("MCP_PORT", 3010),
-    publicUrl: readEnv("MCP_PUBLIC_URL") || undefined,
-    iconUrl: readEnv("MCP_ICON_URL", "https://cdn.jsdelivr.net/gh/selfhst/icons/png/mcphub.png"),
+    publicUrl,
+    iconUrl: readEnv("MCP_ICON_URL", defaultIconUrl),
     accessToken: requireEnv("MCP_ACCESS_TOKEN"),
     corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
