@@ -36,7 +36,6 @@ The HTTP server also exposes `/health`, OAuth discovery metadata, dynamic client
 - `services.ts` — Types only: `ServiceDefinition`, `ServiceAuth` (five auth modes), `ServiceRequestInput`.
 - `serviceClient.ts` — `callService()` builds the URL, injects auth headers, blocks dangerous request headers (`BLOCKED_REQUEST_HEADERS`), applies upstream timeouts, logs structured request events, and returns structured success or normalized error objects. `interpolatePath()` handles `{param}` substitution.
 - `apiCatalog.ts` — Static catalog of known API endpoints for each service (`ApiCatalog` / `ApiEndpoint`). `catalogFor()` and `endpointFor()` are the lookup helpers used by `*_api_reference` and `*_operation`.
-- `uploadStore.ts` — In-memory `UploadStore` class that manages chunked Paperless uploads: start/addChunk/finish/abort lifecycle, TTL expiry (15 min), PDF magic-byte validation, max decoded size (50 MB), and base64-only chunk validation. The singleton `paperlessUploadStore` is used by the Paperless tools in `mcp.ts`.
 - `openapi.ts` — Generates the OpenAPI 3.0.3 spec from the enabled service catalogs (`generateOpenApiSpec`) and renders Swagger UI HTML (`renderSwaggerUI`). Both `/openapi.json` and `/docs` are auth-protected.
 
 ## Adding a new service

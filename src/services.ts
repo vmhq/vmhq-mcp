@@ -5,8 +5,7 @@ export type ServiceId =
   | "searxng"
   | "proxmox"
   | "memos"
-  | "adguard"
-  | "paperless";
+  | "adguard";
 
 export type ServiceAuth =
   | { type: "none" }

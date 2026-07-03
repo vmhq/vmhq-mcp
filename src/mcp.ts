@@ -4,7 +4,6 @@ import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMethod, type ServiceRequestInput } from "./services.js";
-import { paperlessUploadStore } from "./uploadStore.js";
 
 const queryValueSchema = z.union([
   z.string(),
@@ -38,31 +37,6 @@ const apiOperationSchema = {
   pathParams: z.record(z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {entity_id}."),
   ...commonRequestFields,
 };
-
-const paperlessUploadStartSchema = {
-  filename: z.string().min(1).describe("PDF filename basename, for example document.pdf. Do not pass a local path."),
-  contentType: z.string().optional().describe("MIME type. Defaults to application/pdf."),
-  expectedSize: z.number().int().positive().optional().describe("Expected decoded byte size."),
-  expectedBase64Length: z.number().int().positive().optional().describe("Expected total base64 character length."),
-  title: z.string().optional().describe("Optional Paperless title."),
-  correspondent: z.union([z.string(), z.number()]).optional().describe("Optional Paperless correspondent id/name."),
-  document_type: z.union([z.string(), z.number()]).optional().describe("Optional Paperless document type id/name."),
-  storage_path: z.union([z.string(), z.number()]).optional().describe("Optional Paperless storage path id/name."),
-  tags: z.array(z.union([z.string(), z.number()])).optional().describe("Optional Paperless tags."),
-  created: z.string().optional().describe("Optional created date, e.g. YYYY-MM-DD."),
-};
-
-const paperlessUploadChunkSchema = {
-  uploadId: z.string().min(1).describe("Upload ID returned by paperless_upload_start."),
-  index: z.number().int().nonnegative().describe("Zero-based chunk index."),
-  chunkBase64: z.string().min(1).describe("A base64 content chunk, not a file path or file:// reference."),
-};
-
-const paperlessUploadFinishSchema = {
-  uploadId: z.string().min(1).describe("Upload ID returned by paperless_upload_start."),
-};
-
-const paperlessUploadAbortSchema = paperlessUploadFinishSchema;
 
 function responseText(payload: unknown, maxLength?: number): string {
   const compact = JSON.stringify(payload);
@@ -139,10 +113,6 @@ function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, se
     groups: Array.from(new Set(catalog.endpoints.map((endpoint) => endpoint.group))).sort(),
     endpoints,
   };
-}
-
-function uploadErrorResult(message: string) {
-  return errorResult({ error: { type: "invalid_upload", service: "paperless", message, retryable: false } });
 }
 
 function errorMessage(error: unknown): string {
@@ -311,105 +281,6 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
   );
 }
 
-function registerPaperlessUploadTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
-  server.tool(
-    "paperless_upload_start",
-    "Start a chunked Paperless document upload. Use this for PDFs too large to pass as one _base64 value.",
-    paperlessUploadStartSchema,
-    { title: "Paperless Upload Start" },
-    async (input: {
-      filename: string;
-      contentType?: string;
-      expectedSize?: number;
-      expectedBase64Length?: number;
-      title?: string;
-      correspondent?: string | number;
-      document_type?: string | number;
-      storage_path?: string | number;
-      tags?: Array<string | number>;
-      created?: string;
-    }) => {
-      try {
-        const { filename, contentType, expectedSize, expectedBase64Length, title, correspondent, document_type, storage_path, tags, created } = input;
-        const fields: Record<string, string | number | Array<string | number>> = {};
-        if (title !== undefined) fields.title = title;
-        if (correspondent !== undefined) fields.correspondent = correspondent;
-        if (document_type !== undefined) fields.document_type = document_type;
-        if (storage_path !== undefined) fields.storage_path = storage_path;
-        if (tags !== undefined) fields.tags = tags;
-        if (created !== undefined) fields.created = created;
-
-        return textResult(
-          paperlessUploadStore.start({ filename, contentType: contentType ?? "application/pdf", expectedSize, expectedBase64Length, fields }),
-        );
-      } catch (error) {
-        return uploadErrorResult(errorMessage(error));
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_chunk",
-    "Add one base64 chunk to a Paperless chunked upload. Chunks are zero-indexed.",
-    paperlessUploadChunkSchema,
-    { title: "Paperless Upload Chunk" },
-    async (input: { uploadId: string; index: number; chunkBase64: string }) => {
-      try {
-        return textResult(paperlessUploadStore.addChunk(input.uploadId, input.index, input.chunkBase64));
-      } catch (error) {
-        return uploadErrorResult(errorMessage(error));
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_finish",
-    "Finish a chunked Paperless upload, validate the PDF, and post it to /api/documents/post_document/.",
-    paperlessUploadFinishSchema,
-    { title: "Paperless Upload Finish" },
-    async (input: { uploadId: string }) => {
-      try {
-        const { session, bytes } = paperlessUploadStore.finish(input.uploadId);
-        const result = await callService(
-          service,
-          {
-            method: "POST",
-            path: "/api/documents/post_document/",
-            body: {
-              _multipart: true,
-              ...session.fields,
-              document: {
-                _bytes: bytes,
-                filename: session.filename,
-                contentType: session.contentType,
-              },
-            },
-          },
-          { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "paperless_upload_finish", requestId },
-        );
-
-        return textResult({ uploadId: input.uploadId, result });
-      } catch (error) {
-        return uploadErrorResult(errorMessage(error));
-      }
-    },
-  );
-
-  server.tool(
-    "paperless_upload_abort",
-    "Abort and delete a pending chunked Paperless upload session.",
-    paperlessUploadAbortSchema,
-    { title: "Paperless Upload Abort" },
-    async (input: { uploadId: string }) => {
-      try {
-        return textResult(paperlessUploadStore.abort(input.uploadId));
-      } catch (error) {
-        return uploadErrorResult(errorMessage(error));
-      }
-    },
-  );
-}
-
 function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, requestId?: string): void {
   const pinnedSummary = pinnedHaEntities
     .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
@@ -459,10 +330,6 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
 
   for (const service of services) {
     registerServiceTools(server, service, upstreamTimeoutMs, requestId);
-
-    if (service.id === "paperless") {
-      registerPaperlessUploadTools(server, service, upstreamTimeoutMs, requestId);
-    }
 
     if (service.id === "home_assistant" && pinnedHaEntities.length > 0) {
       registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, requestId);
