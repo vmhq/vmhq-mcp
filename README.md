@@ -13,7 +13,6 @@ The server protects the MCP endpoint with its own bearer token (`MCP_ACCESS_TOKE
 - Proxmox
 - Memos
 - AdGuard Home
-- Paperless-ngx
 
 Each service's real URL is configured only in `.env`. Every service is optional: if you don't define its `*_BASE_URL`, the MCP server starts normally and simply doesn't register that service's tools.
 
@@ -103,7 +102,6 @@ SEARXNG_BASE_URL=https://searxng.example.com
 PROXMOX_BASE_URL=https://proxmox.example.com
 MEMOS_BASE_URL=https://memos.example.com
 ADGUARD_BASE_URL=https://adguard.example.com
-PAPERLESS_BASE_URL=https://paperless.example.com
 
 # Service credentials
 HOME_ASSISTANT_TOKEN=
@@ -115,7 +113,6 @@ KARAKEEP_TOKEN=
 MEMOS_TOKEN=
 ADGUARD_USERNAME=
 ADGUARD_PASSWORD=
-PAPERLESS_TOKEN=
 
 # Proxmox API token
 # Token ID format: USER@REALM!TOKENID
@@ -214,8 +211,6 @@ For each service:
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `adguard_api_reference`, `adguard_operation`, `adguard_request`
-- `paperless_api_reference`, `paperless_operation`, `paperless_request`
-- `paperless_upload_start`, `paperless_upload_chunk`, `paperless_upload_finish`, `paperless_upload_abort` for chunked Paperless document uploads
 
 Recommended agent workflow:
 
@@ -261,31 +256,6 @@ The `*_request` tools accept:
 
 The response returns the status code, useful response headers, and the body as text or JSON.
 
-### Paperless document uploads
-
-For small files, `paperless_operation(operationId="post_document")` and `paperless_request` support multipart bodies with a real base64 payload:
-
-```json
-{
-  "_multipart": true,
-  "title": "Document title",
-  "document": {
-    "_base64": "<real base64 bytes, not a path>",
-    "filename": "document.pdf",
-    "contentType": "application/pdf"
-  }
-}
-```
-
-For larger files, use the chunked upload tools:
-
-1. `paperless_upload_start` with filename, optional metadata, and expected size/length.
-2. `paperless_upload_chunk` repeatedly with zero-based base64 chunks.
-3. `paperless_upload_finish` to validate, assemble, and send the PDF to Paperless.
-4. `paperless_upload_abort` to discard a pending upload.
-
-`_base64` and `chunkBase64` must contain real base64 data. Do not pass local paths or `file://` URLs.
-
 ## Mirrors
 
 | Platform | URL |
@@ -303,4 +273,3 @@ The local catalogue was built from the official documentation reviewed on 2026-0
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
 - AdGuard Home API (OpenAPI spec): https://github.com/AdguardTeam/AdGuardHome/tree/master/openapi
-- Paperless-ngx REST API: https://docs.paperless-ngx.com/api/
