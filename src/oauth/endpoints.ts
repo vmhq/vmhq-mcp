@@ -420,8 +420,10 @@ export function verifyAccessToken(token: string): AuthInfo | undefined {
   const stored = accessTokens.get(hash);
   if (!stored) return undefined;
   if (stored.expiresAt <= Date.now()) {
+    // Drop it from memory, but don't block this request on a synchronous disk write:
+    // the timestamp check above already rejects it on every future lookup regardless
+    // of map presence, and the periodic prune persists the cleanup eventually.
     accessTokens.delete(hash);
-    saveState();
     return undefined;
   }
   return {

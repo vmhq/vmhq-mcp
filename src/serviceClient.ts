@@ -136,6 +136,41 @@ function usefulResponseHeaders(headers: Headers): Record<string, string> {
   return picked;
 }
 
+/** Walks a dotted path (e.g. ["attributes", "friendly_name"]) into a plain object. */
+function getByPath(record: Record<string, unknown>, path: string[]): { found: boolean; value?: unknown } {
+  let current: unknown = record;
+
+  for (const key of path) {
+    if (current === null || typeof current !== "object" || Array.isArray(current)) {
+      return { found: false };
+    }
+
+    const obj = current as Record<string, unknown>;
+    if (!(key in obj)) {
+      return { found: false };
+    }
+
+    current = obj[key];
+  }
+
+  return { found: true, value: current };
+}
+
+/** Sets a dotted path into a plain object, creating intermediate objects as needed. */
+function setByPath(target: Record<string, unknown>, path: string[], value: unknown): void {
+  let current = target;
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i]!;
+    if (current[key] === null || typeof current[key] !== "object" || Array.isArray(current[key])) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+
+  current[path[path.length - 1]!] = value;
+}
+
 function filterFields(data: unknown, fields: string[]): unknown {
   if (Array.isArray(data)) {
     return data.map((item) => filterFields(item, fields));
@@ -154,8 +189,17 @@ function filterFields(data: unknown, fields: string[]): unknown {
 
     const filtered: Record<string, unknown> = {};
     for (const field of fields) {
-      if (field in data) {
+      // Literal key first: response keys can themselves contain dots
+      // (domains, Home Assistant entity IDs), so "light.office" must match
+      // a top-level key before being treated as a nested path.
+      if (field in record) {
         filtered[field] = record[field];
+        continue;
+      }
+      const path = field.split(".");
+      const { found, value } = getByPath(record, path);
+      if (found) {
+        setByPath(filtered, path, value);
       }
     }
     return filtered;

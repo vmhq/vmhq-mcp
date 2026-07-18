@@ -31,6 +31,15 @@ describe("clientIp", () => {
   test("returns undefined when no proxy headers are set", () => {
     expect(clientIp(req())).toBeUndefined();
   });
+
+  test("ignores proxy headers when trustProxy is false", () => {
+    expect(
+      clientIp(
+        req({ "cf-connecting-ip": "203.0.113.10", "x-forwarded-for": "198.51.100.1" }),
+        false,
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("checkRateLimit", () => {
@@ -48,5 +57,16 @@ describe("checkRateLimit", () => {
       expect(checkRateLimit(req({ "x-forwarded-for": ipA }), "oauth_register")).toBe(true);
     }
     expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register")).toBe(true);
+  });
+
+  test("with trustProxy false, spoofed IPs share a single fallback bucket", () => {
+    const ipA = "203.0.113.50";
+    const ipB = "203.0.113.51";
+    for (let i = 0; i < 60; i++) {
+      checkRateLimit(req({ "x-forwarded-for": ipA }), "oauth_register", false);
+    }
+    // ipB's requests land in the same shared bucket as ipA since headers are ignored,
+    // so the fallback cap (60/min) is already exhausted.
+    expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register", false)).toBe(false);
   });
 });
