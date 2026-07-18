@@ -43,22 +43,24 @@ function minifluxAuth(readEnv: (name: string, fallback?: string) => string): Ser
     : { type: "header", tokenEnv: "MINIFLUX_TOKEN", headerName: "X-Auth-Token" };
 }
 
-function adguardAuth(readEnv: (name: string, fallback?: string) => string): ServiceAuth {
-  const username = readEnv("ADGUARD_USERNAME");
-  const password = readEnv("ADGUARD_PASSWORD");
+function adguardAuth(envPrefix: string): (readEnv: (name: string, fallback?: string) => string) => ServiceAuth {
+  return (readEnv) => {
+    const username = readEnv(`${envPrefix}_USERNAME`);
+    const password = readEnv(`${envPrefix}_PASSWORD`);
 
-  if (!username && !password) {
-    return { type: "none" };
-  }
+    if (!username && !password) {
+      return { type: "none" };
+    }
 
-  if (!username || !password) {
-    throw new Error("ADGUARD_USERNAME and ADGUARD_PASSWORD must be configured together.");
-  }
+    if (!username || !password) {
+      throw new Error(`${envPrefix}_USERNAME and ${envPrefix}_PASSWORD must be configured together.`);
+    }
 
-  return {
-    type: "static",
-    headerName: "Authorization",
-    value: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+    return {
+      type: "static",
+      headerName: "Authorization",
+      value: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+    };
   };
 }
 
@@ -116,7 +118,15 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     id: "adguard",
     title: "AdGuard Home",
     baseUrlEnv: "ADGUARD_BASE_URL",
-    auth: adguardAuth,
+    auth: adguardAuth("ADGUARD"),
+    defaultPathPrefix: "/control",
+    pingPath: "/control/status",
+  },
+  {
+    id: "adguard2",
+    title: "AdGuard Home (secondary)",
+    baseUrlEnv: "ADGUARD2_BASE_URL",
+    auth: adguardAuth("ADGUARD2"),
     defaultPathPrefix: "/control",
     pingPath: "/control/status",
   },

@@ -281,6 +281,131 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
   );
 }
 
+function combineNumberSeries(seriesList: number[][]): number[] {
+  const maxLen = Math.max(...seriesList.map((series) => series.length));
+  const combined = new Array<number>(maxLen).fill(0);
+
+  for (const series of seriesList) {
+    // Series are per-time-unit with the most recent value last; align at the end.
+    const offset = maxLen - series.length;
+    series.forEach((value, i) => {
+      combined[offset + i] += value;
+    });
+  }
+
+  return combined;
+}
+
+function combineTopLists(lists: Array<Array<Record<string, unknown>>>): Array<Record<string, number>> {
+  const counts = new Map<string, number>();
+
+  for (const list of lists) {
+    for (const item of list) {
+      for (const [name, count] of Object.entries(item)) {
+        if (typeof count === "number") {
+          counts.set(name, (counts.get(name) ?? 0) + count);
+        }
+      }
+    }
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ [name]: count }));
+}
+
+export function combineAdguardStats(statsList: Array<Record<string, unknown>>): Record<string, unknown> {
+  const keys = new Set(statsList.flatMap((stats) => Object.keys(stats)));
+  const combined: Record<string, unknown> = {};
+
+  for (const key of keys) {
+    if (key === "avg_processing_time") continue;
+
+    const values = statsList.map((stats) => stats[key]).filter((value) => value !== undefined);
+
+    if (values.every((value) => typeof value === "number")) {
+      combined[key] = (values as number[]).reduce((sum, value) => sum + value, 0);
+    } else if (values.every((value) => Array.isArray(value) && value.every((item) => typeof item === "number"))) {
+      combined[key] = combineNumberSeries(values as number[][]);
+    } else if (values.every((value) => Array.isArray(value) && value.every(isPlainObject))) {
+      combined[key] = combineTopLists(values as Array<Array<Record<string, unknown>>>);
+    } else {
+      combined[key] = values[0];
+    }
+  }
+
+  const withAvg = statsList.filter((stats) => typeof stats.avg_processing_time === "number");
+  if (withAvg.length > 0) {
+    // Weight by each instance's query count so a busy instance dominates the average.
+    const totalQueries = withAvg.reduce((sum, stats) => sum + (typeof stats.num_dns_queries === "number" ? stats.num_dns_queries : 0), 0);
+    combined.avg_processing_time =
+      totalQueries > 0
+        ? withAvg.reduce(
+            (sum, stats) =>
+              sum + (stats.avg_processing_time as number) * (typeof stats.num_dns_queries === "number" ? stats.num_dns_queries : 0),
+            0,
+          ) / totalQueries
+        : withAvg.reduce((sum, stats) => sum + (stats.avg_processing_time as number), 0) / withAvg.length;
+  }
+
+  return combined;
+}
+
+function registerAdguardCombinedStatsTool(server: McpServer, adguardServices: ServiceDefinition[], upstreamTimeoutMs: number, requestId?: string): void {
+  const instanceIds = adguardServices.map((service) => service.id).join(", ");
+
+  server.tool(
+    "adguard_combined_stats",
+    `Fetch DNS statistics from every configured AdGuard Home instance (${instanceIds}) in parallel and return per-instance stats plus a combined total: numeric counters are summed, per-time-unit series are summed aligned at the most recent unit, top_* lists are merged and re-sorted, and avg_processing_time is weighted by each instance's query count.`,
+    {
+      maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
+    },
+    { title: "AdGuard Combined Stats" },
+    async ({ maxLength }: { maxLength?: number }) => {
+      const endpoint = endpointFor("adguard", "stats");
+      if (!endpoint) {
+        return errorResult({ error: "unknown_operation", operationId: "stats" });
+      }
+
+      const results = await Promise.all(
+        adguardServices.map((service) =>
+          callService(
+            service,
+            { method: endpoint.method, path: endpoint.path },
+            { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "combined_stats", requestId },
+          ),
+        ),
+      );
+
+      type InstanceResult = { service: ServiceId; ok: boolean; stats?: Record<string, unknown>; error?: unknown };
+      const instances: InstanceResult[] = adguardServices.map((service, i) => {
+        const result = results[i] as Record<string, unknown>;
+        const response = result.response as Record<string, unknown> | undefined;
+        const body = response?.body;
+        return !result.error && isPlainObject(body)
+          ? { service: service.id, ok: true, stats: body }
+          : { service: service.id, ok: false, error: result.error ?? "non_json_response" };
+      });
+
+      const successfulStats = instances.flatMap((instance) => (instance.stats ? [instance.stats] : []));
+
+      if (successfulStats.length === 0) {
+        return errorResult({ error: "all_instances_failed", instances }, maxLength);
+      }
+
+      return textResult(
+        {
+          combined: combineAdguardStats(successfulStats),
+          combinedFrom: instances.filter((instance) => instance.ok).map((instance) => instance.service),
+          ...(successfulStats.length < instances.length ? { partial: true } : {}),
+          instances,
+        },
+        maxLength,
+      );
+    },
+  );
+}
+
 function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, requestId?: string): void {
   const pinnedSummary = pinnedHaEntities
     .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
@@ -334,6 +459,11 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
     if (service.id === "home_assistant" && pinnedHaEntities.length > 0) {
       registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, requestId);
     }
+  }
+
+  const adguardServices = services.filter((service) => service.id === "adguard" || service.id === "adguard2");
+  if (adguardServices.length > 1) {
+    registerAdguardCombinedStatsTool(server, adguardServices, upstreamTimeoutMs, requestId);
   }
 
   return server;

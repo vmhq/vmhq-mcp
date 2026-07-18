@@ -26,7 +26,7 @@ export type ApiCatalog = {
 
 const checkedAt = "2026-05-14";
 
-export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
+const BASE_CATALOGS = {
   home_assistant: {
     service: "home_assistant",
     title: "Home Assistant REST API",
@@ -359,6 +359,17 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       { operationId: "logout", method: "GET", path: "/logout", group: "global", summary: "Perform administrator log-out." },
       { operationId: "profile", method: "GET", path: "/profile", group: "global", summary: "Get the current user's profile info." },
     ],
+  },
+} satisfies Record<Exclude<ServiceId, "adguard2">, ApiCatalog>;
+
+// adguard2 exposes the same AdGuard Home API against a second instance, so it reuses the adguard catalog.
+export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
+  ...BASE_CATALOGS,
+  adguard2: {
+    ...BASE_CATALOGS.adguard,
+    service: "adguard2",
+    title: "AdGuard Home API (secondary instance)",
+    auth: "HTTP Basic Auth. Configure ADGUARD2_USERNAME and ADGUARD2_PASSWORD server-side; the header is built at startup.",
   },
 };
 
