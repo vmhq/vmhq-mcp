@@ -102,6 +102,8 @@ SEARXNG_BASE_URL=https://searxng.example.com
 PROXMOX_BASE_URL=https://proxmox.example.com
 MEMOS_BASE_URL=https://memos.example.com
 ADGUARD_BASE_URL=https://adguard.example.com
+# Optional second AdGuard Home instance (tools: adguard2_*).
+ADGUARD2_BASE_URL=
 
 # Service credentials
 HOME_ASSISTANT_TOKEN=
@@ -113,6 +115,8 @@ KARAKEEP_TOKEN=
 MEMOS_TOKEN=
 ADGUARD_USERNAME=
 ADGUARD_PASSWORD=
+ADGUARD2_USERNAME=
+ADGUARD2_PASSWORD=
 
 # Proxmox API token
 # Token ID format: USER@REALM!TOKENID
@@ -211,6 +215,8 @@ For each service:
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `adguard_api_reference`, `adguard_operation`, `adguard_request`
+- `adguard2_api_reference`, `adguard2_operation`, `adguard2_request` — second AdGuard Home instance (enabled by `ADGUARD2_BASE_URL`)
+- `adguard_combined_stats` — fetches `/stats` from both AdGuard Home instances and returns per-instance stats plus a combined total (registered only when both instances are enabled)
 
 Recommended agent workflow:
 
