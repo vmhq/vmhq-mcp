@@ -1,4 +1,5 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createMcpServer } from "./mcp.js";
 import { loadConfig } from "./config.js";
 import { log } from "./logger.js";
@@ -31,6 +32,8 @@ function rateLimited(req: Request, bucket: string): Response {
 const config = loadConfig();
 const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl, pocketId: config.pocketId };
 const iconSvg = await Bun.file(new URL("./assets/icon.svg", import.meta.url)).text();
+// Services and publicUrl are fixed at startup, so the spec never changes across requests.
+const openApiSpecJson = JSON.stringify(generateOpenApiSpec(config.services, config.publicUrl));
 
 function bearerToken(req: Request): string {
   const authorization = req.headers.get("authorization") ?? "";
@@ -54,13 +57,11 @@ function secureResponse(resp: Response): Response {
   return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
 
-async function handleMcp(req: Request, token: string, requestId: string): Promise<Response> {
+async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId: string): Promise<Response> {
   const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, config.pinnedHaEntities, requestId);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
-
-  const authInfo = verifyAccessToken(token);
 
   try {
     return await transport.handleRequest(req, { authInfo });
@@ -181,15 +182,16 @@ const httpServer = Bun.serve({
 
     const token = bearerToken(req);
     const isStaticToken = constantTimeEqual(token, config.accessToken);
-    const isOauth = !isStaticToken && !!verifyAccessToken(token);
+    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token);
 
-    if (!isStaticToken && !isOauth) {
+    if (!isStaticToken && !oauthInfo) {
       return unauthorized(oauthConfig, req);
     }
 
     if (url.pathname === "/openapi.json") {
-      const spec = generateOpenApiSpec(config.services, config.publicUrl);
-      return secureResponse(Response.json(spec));
+      return secureResponse(
+        new Response(openApiSpecJson, { headers: { "Content-Type": "application/json" } }),
+      );
     }
 
     if (url.pathname === "/docs") {
@@ -203,7 +205,7 @@ const httpServer = Bun.serve({
       );
     }
 
-    const response = await handleMcp(req, isOauth ? token : "", requestId);
+    const response = await handleMcp(req, oauthInfo, requestId);
     log("info", "mcp_request_finished", {
       method: req.method,
       path: url.pathname,
