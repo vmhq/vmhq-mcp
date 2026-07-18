@@ -66,7 +66,11 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
   try {
     return await transport.handleRequest(req, { authInfo });
   } catch (error) {
-    log("error", "mcp_request_failed", { requestId, error: error instanceof Error ? error.message : String(error) });
+    log("error", "mcp_request_failed", {
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+    });
     return json({ error: "mcp_request_failed" }, { status: 500 });
   }
 }

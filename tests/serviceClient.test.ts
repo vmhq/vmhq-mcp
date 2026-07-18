@@ -263,21 +263,18 @@ describe("callService", () => {
     servers.push(server);
 
     const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
-    const result = await callService(
+    const result = (await callService(
       service,
       { method: "GET", path: "/states/light.office", fields: ["entity_id", "state", "attributes.friendly_name"] },
       { timeoutMs: 1_000 },
-    );
+    )) as { response: { ok: boolean; body: unknown } };
 
-    expect(result).toMatchObject({
-      response: {
-        ok: true,
-        body: {
-          entity_id: "light.office",
-          state: "on",
-          attributes: { friendly_name: "Office Light" },
-        },
-      },
+    expect(result.response.ok).toBe(true);
+    // Exact equality: unselected fields (attributes.brightness, attributes.extra) must be gone.
+    expect(result.response.body).toEqual({
+      entity_id: "light.office",
+      state: "on",
+      attributes: { friendly_name: "Office Light" },
     });
   });
 
@@ -291,18 +288,38 @@ describe("callService", () => {
     servers.push(server);
 
     const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
-    const result = await callService(
+    const result = (await callService(
       service,
       { method: "GET", path: "/states/light.office", fields: ["state", "attributes.friendly_name"] },
       { timeoutMs: 1_000 },
-    );
+    )) as { response: { ok: boolean; body: unknown } };
 
-    expect(result).toMatchObject({
-      response: {
-        ok: true,
-        body: { state: "on" },
+    expect(result.response.ok).toBe(true);
+    // Exact equality: the missing nested path must not appear at all (no empty attributes object).
+    expect(result.response.body).toEqual({ state: "on" });
+  });
+
+  test("prefers a literal dotted top-level key over nested path interpretation", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          "light.office": { state: "on" },
+          "light.kitchen": { state: "off" },
+        });
       },
     });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    const result = (await callService(
+      service,
+      { method: "GET", path: "/states", fields: ["light.office"] },
+      { timeoutMs: 1_000 },
+    )) as { response: { ok: boolean; body: unknown } };
+
+    expect(result.response.ok).toBe(true);
+    expect(result.response.body).toEqual({ "light.office": { state: "on" } });
   });
 
   test("returns normalized missing credential error", async () => {

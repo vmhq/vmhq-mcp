@@ -189,6 +189,13 @@ function filterFields(data: unknown, fields: string[]): unknown {
 
     const filtered: Record<string, unknown> = {};
     for (const field of fields) {
+      // Literal key first: response keys can themselves contain dots
+      // (domains, Home Assistant entity IDs), so "light.office" must match
+      // a top-level key before being treated as a nested path.
+      if (field in record) {
+        filtered[field] = record[field];
+        continue;
+      }
       const path = field.split(".");
       const { found, value } = getByPath(record, path);
       if (found) {
