@@ -95,11 +95,14 @@ export function rateLimitRetryAfterSec(req: Request, bucket: string, trustProxy:
 const CLEANUP_INTERVAL_MS = 5 * 60_000;
 setInterval(() => {
   const now = Date.now();
-  for (const bucketMap of windows.values()) {
+  for (const [bucket, bucketMap] of windows.entries()) {
     for (const [ip, entry] of bucketMap) {
       if (entry.resetAt <= now) {
         bucketMap.delete(ip);
       }
+    }
+    if (bucketMap.size === 0) {
+      windows.delete(bucket);
     }
   }
 }, CLEANUP_INTERVAL_MS).unref?.();
