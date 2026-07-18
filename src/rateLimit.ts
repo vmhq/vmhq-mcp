@@ -2,8 +2,21 @@ const windows = new Map<string, Map<string, { count: number; resetAt: number }>>
 
 const UNKNOWN_CLIENT_KEY = "__no_client_ip__";
 
+/**
+ * Whether to trust reverse-proxy IP headers (CF-Connecting-IP, X-Real-IP,
+ * X-Forwarded-For). Defaults to true (this server expects Cloudflare/nginx in
+ * front of it). Set MCP_TRUST_PROXY=false if the server is ever reachable
+ * directly, since those headers are trivially spoofable by any client and
+ * would otherwise let a caller dodge per-IP rate limits by rotating them.
+ */
+function trustProxyHeaders(): boolean {
+  return (process.env.MCP_TRUST_PROXY ?? "true").toLowerCase() !== "false";
+}
+
 /** Client IP from reverse-proxy headers (Cloudflare, nginx, etc.). */
-export function clientIp(req: Request): string | undefined {
+export function clientIp(req: Request, trustProxy: boolean = trustProxyHeaders()): string | undefined {
+  if (!trustProxy) return undefined;
+
   for (const header of ["cf-connecting-ip", "x-real-ip"]) {
     const value = req.headers.get(header)?.trim();
     if (value) return value;
@@ -17,8 +30,8 @@ export function clientIp(req: Request): string | undefined {
   return undefined;
 }
 
-function rateLimitKey(req: Request): string {
-  return clientIp(req) ?? UNKNOWN_CLIENT_KEY;
+function rateLimitKey(req: Request, trustProxy: boolean): string {
+  return clientIp(req, trustProxy) ?? UNKNOWN_CLIENT_KEY;
 }
 
 export type RateLimitConfig = {
@@ -41,8 +54,8 @@ const unknownClientConfigs: Partial<Record<string, RateLimitConfig>> = {
   oauth_token: { maxRequests: 60, windowMs: 60_000 },
 };
 
-export function checkRateLimit(req: Request, bucket: string): boolean {
-  const key = rateLimitKey(req);
+export function checkRateLimit(req: Request, bucket: string, trustProxy: boolean = trustProxyHeaders()): boolean {
+  const key = rateLimitKey(req, trustProxy);
   const config =
     key === UNKNOWN_CLIENT_KEY
       ? (unknownClientConfigs[bucket] ?? defaultConfigs[bucket])
@@ -72,8 +85,8 @@ export function checkRateLimit(req: Request, bucket: string): boolean {
 }
 
 /** Seconds until the current rate-limit window resets (for Retry-After). */
-export function rateLimitRetryAfterSec(req: Request, bucket: string): number {
-  const key = rateLimitKey(req);
+export function rateLimitRetryAfterSec(req: Request, bucket: string, trustProxy: boolean = trustProxyHeaders()): number {
+  const key = rateLimitKey(req, trustProxy);
   const entry = windows.get(bucket)?.get(key);
   if (!entry) return 60;
   return Math.max(1, Math.ceil((entry.resetAt - Date.now()) / 1000));

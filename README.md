@@ -136,6 +136,10 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # Path for persisting OAuth state inside the container (matches the vmhq-mcp-data:/app/data Docker volume).
 # Stored OAuth access tokens are persisted as SHA-256 hashes.
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
+# Whether to trust reverse-proxy IP headers for per-IP rate limiting. Defaults to true.
+# Set to false if this server is ever reachable without a trusted reverse proxy in front
+# of it, since those headers are otherwise spoofable and let a caller dodge rate limits.
+# MCP_TRUST_PROXY=true
 ```
 
 ## Codex configuration
