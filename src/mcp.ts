@@ -120,7 +120,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function registerStatusTools(server: McpServer, services: ServiceDefinition[], iconUrl: string, requestId?: string): void {
+function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, requestId?: string): void {
   server.tool(
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
@@ -131,7 +131,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], i
     async ({ ping }: { ping?: boolean }) => {
       const PING_TIMEOUT_MS = 3_000;
       const enabled = services.map((service) => service.id);
-      const disabled = (Object.keys(API_CATALOGS) as ServiceId[]).filter((serviceId) => !enabled.includes(serviceId));
+      const disabled = (Object.keys(API_CATALOGS) as ServiceId[]).filter((serviceId) => !enabledServiceIds.has(serviceId));
 
       let pingResults: Record<string, unknown> | undefined;
 
@@ -452,17 +452,20 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
     ],
   });
 
-  registerStatusTools(server, services, iconUrl, requestId);
+  const enabledServiceIds = new Set(services.map((service) => service.id));
+  const adguardServices = services.filter((service) => service.id === "adguard" || service.id === "adguard2");
+  const homeAssistantService = services.find((service) => service.id === "home_assistant");
+
+  registerStatusTools(server, services, enabledServiceIds, iconUrl, requestId);
 
   for (const service of services) {
     registerServiceTools(server, service, upstreamTimeoutMs, requestId);
 
-    if (service.id === "home_assistant" && pinnedHaEntities.length > 0) {
+    if (service === homeAssistantService && pinnedHaEntities.length > 0) {
       registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, requestId);
     }
   }
 
-  const adguardServices = services.filter((service) => service.id === "adguard" || service.id === "adguard2");
   if (adguardServices.length > 1) {
     registerAdguardCombinedStatsTool(server, adguardServices, upstreamTimeoutMs, requestId);
   }
