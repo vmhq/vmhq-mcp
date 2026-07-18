@@ -39,13 +39,14 @@ const apiOperationSchema = {
 };
 
 function responseText(payload: unknown, maxLength?: number): string {
-  const compact = JSON.stringify(payload);
   const threshold = maxLength ?? 8000;
+  const pretty = JSON.stringify(payload, null, 2);
 
-  if (compact.length <= threshold) {
-    return JSON.stringify(payload, null, 2);
+  if (pretty.length <= threshold) {
+    return pretty;
   }
 
+  const compact = JSON.stringify(payload);
   if (maxLength && compact.length > maxLength) {
     return compact.slice(0, maxLength) + `\n... [truncated: ${compact.length - maxLength} more characters]`;
   }
