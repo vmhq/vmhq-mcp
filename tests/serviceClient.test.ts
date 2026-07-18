@@ -249,6 +249,62 @@ describe("callService", () => {
     });
   });
 
+  test("applies nested dotted fields and preserves nested structure", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({
+          entity_id: "light.office",
+          state: "on",
+          attributes: { friendly_name: "Office Light", brightness: 200, extra: "drop me" },
+        });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    const result = await callService(
+      service,
+      { method: "GET", path: "/states/light.office", fields: ["entity_id", "state", "attributes.friendly_name"] },
+      { timeoutMs: 1_000 },
+    );
+
+    expect(result).toMatchObject({
+      response: {
+        ok: true,
+        body: {
+          entity_id: "light.office",
+          state: "on",
+          attributes: { friendly_name: "Office Light" },
+        },
+      },
+    });
+  });
+
+  test("silently omits missing nested dotted fields", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.json({ entity_id: "light.office", state: "on" });
+      },
+    });
+    servers.push(server);
+
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${server.port}/api` };
+    const result = await callService(
+      service,
+      { method: "GET", path: "/states/light.office", fields: ["state", "attributes.friendly_name"] },
+      { timeoutMs: 1_000 },
+    );
+
+    expect(result).toMatchObject({
+      response: {
+        ok: true,
+        body: { state: "on" },
+      },
+    });
+  });
+
   test("returns normalized missing credential error", async () => {
     delete process.env.MINIFLUX_TOKEN;
     const result = await callService(

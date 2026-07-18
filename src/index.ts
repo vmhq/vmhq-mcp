@@ -65,7 +65,7 @@ async function handleMcp(req: Request, token: string, requestId: string): Promis
   try {
     return await transport.handleRequest(req, { authInfo });
   } catch (error) {
-    console.error("MCP request failed", error);
+    log("error", "mcp_request_failed", { requestId, error: error instanceof Error ? error.message : String(error) });
     return json({ error: "mcp_request_failed" }, { status: 500 });
   }
 }
@@ -195,7 +195,7 @@ const httpServer = Bun.serve({
     if (url.pathname === "/docs") {
       const openapiUrl = config.publicUrl
         ? `${config.publicUrl.replace(/\/$/, "")}/openapi.json`
-        : `${new URL(req.url).origin}/openapi.json`;
+        : `${url.origin}/openapi.json`;
       return secureResponse(
         new Response(renderSwaggerUI(openapiUrl), {
           headers: { "Content-Type": "text/html; charset=utf-8" },
