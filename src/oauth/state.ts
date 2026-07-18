@@ -140,7 +140,6 @@ export function saveState(): void {
     writeFileSync(tmp, JSON.stringify(payload), "utf-8");
     chmodSync(tmp, 0o600);
     renameSync(tmp, STATE_PATH);
-    chmodSync(STATE_PATH, 0o600);
   } catch (err) {
     log("error", "oauth_state_persist_failed", { error: err instanceof Error ? err.message : String(err) });
   }
