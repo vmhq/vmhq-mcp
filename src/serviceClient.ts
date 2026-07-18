@@ -171,9 +171,15 @@ function setByPath(target: Record<string, unknown>, path: string[], value: unkno
   current[path[path.length - 1]!] = value;
 }
 
-function filterFields(data: unknown, fields: string[]): unknown {
+type ParsedField = { raw: string; path: string[] };
+
+function parseFields(fields: string[]): ParsedField[] {
+  return fields.map((field) => ({ raw: field, path: field.split(".") }));
+}
+
+function filterFields(data: unknown, parsedFields: ParsedField[]): unknown {
   if (Array.isArray(data)) {
-    return data.map((item) => filterFields(item, fields));
+    return data.map((item) => filterFields(item, parsedFields));
   }
 
   if (data !== null && typeof data === "object") {
@@ -183,20 +189,19 @@ function filterFields(data: unknown, fields: string[]): unknown {
     if (Array.isArray(record.entries) && typeof record.total === "number") {
       return {
         total: record.total,
-        entries: filterFields(record.entries, fields),
+        entries: filterFields(record.entries, parsedFields),
       };
     }
 
     const filtered: Record<string, unknown> = {};
-    for (const field of fields) {
+    for (const { raw, path } of parsedFields) {
       // Literal key first: response keys can themselves contain dots
       // (domains, Home Assistant entity IDs), so "light.office" must match
       // a top-level key before being treated as a nested path.
-      if (field in record) {
-        filtered[field] = record[field];
+      if (raw in record) {
+        filtered[raw] = record[raw];
         continue;
       }
-      const path = field.split(".");
       const { found, value } = getByPath(record, path);
       if (found) {
         setByPath(filtered, path, value);
@@ -352,7 +357,7 @@ export async function callService(
     let responseBody = await parseBody(response);
 
     if (input.fields && Array.isArray(input.fields) && input.fields.length > 0) {
-      responseBody = filterFields(responseBody, input.fields);
+      responseBody = filterFields(responseBody, parseFields(input.fields));
     }
 
     if (input.domain) {
