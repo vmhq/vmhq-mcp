@@ -110,7 +110,9 @@ export function renderAuthorizeSuccess(redirectUrl: string): Response {
     return renderAuthorizeError("The redirect target is not allowed.");
   }
   const href = escapeHtml(redirectUrl);
-  const jsUrl = JSON.stringify(redirectUrl);
+  // JSON.stringify does not escape "/", so a URL containing "</script>" would
+  // terminate the inline <script> block. Escape "<" as < for safe embedding.
+  const jsUrl = JSON.stringify(redirectUrl).replace(/</g, "\\u003c");
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
