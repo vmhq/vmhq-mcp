@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { buildUrl, callService, interpolatePath, isMultipartBody } from "../src/serviceClient.js";
+import { buildUrl, callService, filterFields, interpolatePath, isMultipartBody, parseFields } from "../src/serviceClient.js";
 import type { ServiceDefinition } from "../src/services.js";
 
 process.env.MCP_LOG_LEVEL = "silent";
@@ -358,5 +358,23 @@ describe("callService", () => {
         retryable: true,
       },
     });
+  });
+});
+
+describe("filterFields prototype-pollution guard", () => {
+  test("drops __proto__ paths and never pollutes Object.prototype", () => {
+    const data = JSON.parse('{"__proto__": {"polluted": "PWNED"}, "safe": 1}');
+    const result = filterFields(data, parseFields(["__proto__.polluted", "safe"]));
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(result).toEqual({ safe: 1 });
+  });
+
+  test("drops constructor and prototype segments anywhere in the path", () => {
+    const data = { constructor: "evil", a: { prototype: 1, b: 2 } };
+    expect(filterFields(data, parseFields(["constructor", "a.prototype", "a.b"]))).toEqual({ a: { b: 2 } });
+  });
+
+  test("does not copy inherited properties", () => {
+    expect(filterFields({ real: 1 }, parseFields(["toString", "real"]))).toEqual({ real: 1 });
   });
 });

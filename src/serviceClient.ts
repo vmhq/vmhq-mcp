@@ -146,7 +146,7 @@ function getByPath(record: Record<string, unknown>, path: string[]): { found: bo
     }
 
     const obj = current as Record<string, unknown>;
-    if (!(key in obj)) {
+    if (!Object.hasOwn(obj, key)) {
       return { found: false };
     }
 
@@ -173,11 +173,16 @@ function setByPath(target: Record<string, unknown>, path: string[], value: unkno
 
 type ParsedField = { raw: string; path: string[] };
 
-function parseFields(fields: string[]): ParsedField[] {
-  return fields.map((field) => ({ raw: field, path: field.split(".") }));
+/** Segments that must never be traversed or written via field paths. */
+const FORBIDDEN_FIELD_PATH_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
+
+export function parseFields(fields: string[]): ParsedField[] {
+  return fields
+    .map((field) => ({ raw: field, path: field.split(".") }))
+    .filter(({ path }) => path.every((segment) => !FORBIDDEN_FIELD_PATH_SEGMENTS.has(segment)));
 }
 
-function filterFields(data: unknown, parsedFields: ParsedField[]): unknown {
+export function filterFields(data: unknown, parsedFields: ParsedField[]): unknown {
   if (Array.isArray(data)) {
     return data.map((item) => filterFields(item, parsedFields));
   }
@@ -198,7 +203,7 @@ function filterFields(data: unknown, parsedFields: ParsedField[]): unknown {
       // Literal key first: response keys can themselves contain dots
       // (domains, Home Assistant entity IDs), so "light.office" must match
       // a top-level key before being treated as a nested path.
-      if (raw in record) {
+      if (Object.hasOwn(record, raw)) {
         filtered[raw] = record[raw];
         continue;
       }
