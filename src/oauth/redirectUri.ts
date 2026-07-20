@@ -8,6 +8,32 @@
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+/**
+ * Schemes that must never be accepted as OAuth redirect URIs: they execute
+ * script in the browser context (javascript:, vbscript:), embed attacker-
+ * controlled documents (data:, blob:), or reference local/browser-internal
+ * resources. Native-app schemes (claude://, cursor://, …) remain allowed
+ * per RFC 8252 §7.1.
+ */
+const BLOCKED_SCHEMES = new Set([
+  "javascript:",
+  "data:",
+  "vbscript:",
+  "file:",
+  "filesystem:",
+  "about:",
+  "blob:",
+  "view-source:",
+  "chrome:",
+  "chrome-extension:",
+  "moz-extension:",
+  "ms-browser-extension:",
+  "resource:",
+  "jar:",
+  "ws:",
+  "wss:",
+]);
+
 /** Claude.ai web connector callback (https://claude.com/docs/connectors/building/authentication). */
 export const CLAUDE_WEB_AUTH_CALLBACK = "https://claude.ai/api/mcp/auth_callback";
 
@@ -44,8 +70,11 @@ export function isRegistrableRedirectUri(uri: string): boolean {
     // RFC 8252 §8.3 – loopback: must use http (not https)
     if (LOOPBACK.has(p.hostname)) return p.protocol === "http:";
 
-    // RFC 8252 §7.1 – private-use URI schemes (e.g. claude://, myapp://)
-    if (p.protocol !== "https:" && p.protocol !== "http:") return true;
+    // RFC 8252 §7.1 – private-use URI schemes (e.g. claude://, cursor://),
+    // minus browser-executable / local-resource schemes.
+    if (p.protocol !== "https:" && p.protocol !== "http:") {
+      return !BLOCKED_SCHEMES.has(p.protocol);
+    }
 
     // Standard HTTPS
     return p.protocol === "https:" && p.hostname !== "0.0.0.0" && !p.hostname.includes("*");

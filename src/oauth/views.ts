@@ -1,5 +1,5 @@
 /** HTML views for the OAuth authorization flow (error + success pages). */
-import { canonicalRedirectUri } from "./redirectUri.js";
+import { canonicalRedirectUri, isRegistrableRedirectUri } from "./redirectUri.js";
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -104,6 +104,11 @@ export function buildAuthorizationRedirectUrl(redirectUri: string, code: string,
 
 /** HTML success page with auto-redirect (works better in OAuth popups than a bare 303). */
 export function renderAuthorizeSuccess(redirectUrl: string): Response {
+  // Defense in depth: never emit an auto-redirect page to a scheme that
+  // registration would reject (protects against legacy persisted state).
+  if (!isRegistrableRedirectUri(redirectUrl)) {
+    return renderAuthorizeError("The redirect target is not allowed.");
+  }
   const href = escapeHtml(redirectUrl);
   const jsUrl = JSON.stringify(redirectUrl);
   const html = `<!DOCTYPE html>
