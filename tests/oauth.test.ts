@@ -620,6 +620,36 @@ describe("RFC 8707 resource indicators", () => {
     );
     expect(tokenRes.status).toBe(200);
   });
+
+  // Characterization test (RFC 8707 §2.2): omitting `resource` in the token
+  // request is conformant — the issued token keeps the resource bound to the
+  // authorization code at authorize time.
+  test("token exchange without resource keeps the authorize-time resource bound to the token", async () => {
+    const resource = "https://mcp.example.com/mcp";
+    const redirectUri = "https://resource-omission.example.com/cb";
+    const clientId = await register(redirectUri);
+    const verifier = "verifier-8707-omission";
+    const { code } = await authorizeViaPocketId({
+      clientId,
+      redirectUri,
+      codeChallenge: s256(verifier),
+      resource,
+    });
+    // omitting `resource` entirely in the token request
+    const tokenRes = await oauth.exchangeToken(
+      formRequest("https://mcp.example.com/oauth/token", {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        code_verifier: verifier,
+      }),
+    );
+    expect(tokenRes.status).toBe(200);
+    const body = (await tokenRes.json()) as { access_token: string };
+    const info = oauth.verifyAccessToken(body.access_token);
+    expect(info?.resource?.toString()).toBe(resource);
+  });
 });
 
 // ─── Scope passthrough ────────────────────────────────────────────────────────
