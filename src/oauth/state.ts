@@ -148,8 +148,8 @@ export function saveState(): void {
       accessTokens: [...accessTokens.entries()],
     };
     const tmp = `${STATE_PATH}.tmp`;
-    writeFileSync(tmp, JSON.stringify(payload), "utf-8");
-    chmodSync(tmp, 0o600);
+    writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
+    chmodSync(tmp, 0o600); // covers the case where a loose tmp file already existed
     renameSync(tmp, STATE_PATH);
   } catch (err) {
     log("error", "oauth_state_persist_failed", { error: err instanceof Error ? err.message : String(err) });

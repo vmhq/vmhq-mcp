@@ -26,6 +26,19 @@ function readNumberEnv(name: string, fallback: number): number {
   return value;
 }
 
+/** Minimum accepted length for the static MCP access token. */
+const MIN_ACCESS_TOKEN_LENGTH = 32;
+
+function requireAccessToken(): string {
+  const token = requireEnv("MCP_ACCESS_TOKEN");
+  if (token.length < MIN_ACCESS_TOKEN_LENGTH) {
+    throw new Error(
+      `MCP_ACCESS_TOKEN must be at least ${MIN_ACCESS_TOKEN_LENGTH} characters. Generate one with: openssl rand -base64 48`,
+    );
+  }
+  return token;
+}
+
 export type PinnedHaEntity = { entityId: string; alias?: string };
 
 export type AppConfig = {
@@ -81,7 +94,7 @@ export function loadConfig(): AppConfig {
     port: readNumberEnv("MCP_PORT", 3010),
     publicUrl,
     iconUrl: readEnv("MCP_ICON_URL", defaultIconUrl),
-    accessToken: requireEnv("MCP_ACCESS_TOKEN"),
+    accessToken: requireAccessToken(),
     corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
     services,

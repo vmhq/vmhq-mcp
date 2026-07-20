@@ -776,3 +776,11 @@ describe("access token TTL", () => {
     expect(TOKEN_TTL_S).toBe(60 * 60 * 24 * 30);
   });
 });
+
+describe("state file permissions", () => {
+  test("persists oauth state with 0600 permissions", async () => {
+    const { statSync } = await import("node:fs");
+    await register("https://client.example.com/cb");
+    expect(statSync(statePath).mode & 0o777).toBe(0o600);
+  });
+});
