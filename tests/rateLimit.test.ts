@@ -36,9 +36,28 @@ describe("clientIp", () => {
     expect(
       clientIp(
         req({ "cf-connecting-ip": "203.0.113.10", "x-forwarded-for": "198.51.100.1" }),
-        false,
+        { trustProxy: false },
       ),
     ).toBeUndefined();
+  });
+});
+
+describe("socket IP keying", () => {
+  test("uses socket IP when proxy headers are not trusted", () => {
+    expect(
+      clientIp(req({ "cf-connecting-ip": "203.0.113.10" }), { trustProxy: false, socketIp: "192.0.2.1" }),
+    ).toBe("192.0.2.1");
+  });
+
+  test("falls back to socket IP when proxy headers are absent", () => {
+    expect(clientIp(req(), { socketIp: "192.0.2.2" })).toBe("192.0.2.2");
+  });
+
+  test("isolates buckets per socket IP", () => {
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit(req(), "oauth_register", { trustProxy: false, socketIp: "192.0.2.10" })).toBe(true);
+    }
+    expect(checkRateLimit(req(), "oauth_register", { trustProxy: false, socketIp: "192.0.2.11" })).toBe(true);
   });
 });
 
@@ -59,14 +78,14 @@ describe("checkRateLimit", () => {
     expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register")).toBe(true);
   });
 
-  test("with trustProxy false, spoofed IPs share a single fallback bucket", () => {
+  test("with trustProxy false and no socket IP, spoofed IPs share a single fallback bucket", () => {
     const ipA = "203.0.113.50";
     const ipB = "203.0.113.51";
     for (let i = 0; i < 60; i++) {
-      checkRateLimit(req({ "x-forwarded-for": ipA }), "oauth_register", false);
+      checkRateLimit(req({ "x-forwarded-for": ipA }), "oauth_register", { trustProxy: false });
     }
-    // ipB's requests land in the same shared bucket as ipA since headers are ignored,
-    // so the fallback cap (60/min) is already exhausted.
-    expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register", false)).toBe(false);
+    // ipB's requests land in the same shared bucket as ipA since headers are ignored
+    // and no socket IP was provided, so the fallback cap (60/min) is already exhausted.
+    expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register", { trustProxy: false })).toBe(false);
   });
 });

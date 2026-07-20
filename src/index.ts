@@ -17,15 +17,15 @@ import {
   unauthorized,
   verifyAccessToken,
 } from "./oauth.js";
-import { checkRateLimit, rateLimitRetryAfterSec } from "./rateLimit.js";
+import { checkRateLimit, rateLimitRetryAfterSec, type ClientIpOptions } from "./rateLimit.js";
 import { requestBodyTooLarge } from "./httpGuards.js";
 
-function rateLimited(req: Request, bucket: string): Response {
+function rateLimited(req: Request, bucket: string, ipOpts: ClientIpOptions): Response {
   return json(
     { error: "rate_limited" },
     {
       status: 429,
-      headers: { "Retry-After": String(rateLimitRetryAfterSec(req, bucket)) },
+      headers: { "Retry-After": String(rateLimitRetryAfterSec(req, bucket, ipOpts)) },
     },
   );
 }
@@ -80,8 +80,9 @@ const AUTHENTICATED_PATHS = new Set(["/mcp", "/openapi.json", "/docs"]);
 
 const httpServer = Bun.serve({
   port: config.port,
-  async fetch(req) {
+  async fetch(req, server) {
     const url = new URL(req.url);
+    const ipOpts: ClientIpOptions = { socketIp: server.requestIP(req)?.address };
     const startedAt = performance.now();
     const requestId = crypto.randomUUID().slice(0, 8);
 
@@ -136,36 +137,36 @@ const httpServer = Bun.serve({
     }
 
     if (url.pathname === "/oauth/register" && req.method === "POST") {
-      if (!checkRateLimit(req, "oauth_register")) {
-        return secureResponse(rateLimited(req, "oauth_register"));
+      if (!checkRateLimit(req, "oauth_register", ipOpts)) {
+        return secureResponse(rateLimited(req, "oauth_register", ipOpts));
       }
       return secureResponse(await registerClient(req));
     }
 
     if (url.pathname === "/oauth/authorize" && req.method === "GET") {
-      if (!checkRateLimit(req, "oauth_authorize")) {
-        return secureResponse(rateLimited(req, "oauth_authorize"));
+      if (!checkRateLimit(req, "oauth_authorize", ipOpts)) {
+        return secureResponse(rateLimited(req, "oauth_authorize", ipOpts));
       }
       return secureResponse(await beginAuthorize(req, oauthConfig));
     }
 
     if (url.pathname === "/oauth/callback" && req.method === "GET") {
-      if (!checkRateLimit(req, "oauth_authorize")) {
-        return secureResponse(rateLimited(req, "oauth_authorize"));
+      if (!checkRateLimit(req, "oauth_authorize", ipOpts)) {
+        return secureResponse(rateLimited(req, "oauth_authorize", ipOpts));
       }
       return secureResponse(await oauthCallback(req, oauthConfig));
     }
 
     if (url.pathname === "/oauth/token" && req.method === "POST") {
-      if (!checkRateLimit(req, "oauth_token")) {
-        return secureResponse(rateLimited(req, "oauth_token"));
+      if (!checkRateLimit(req, "oauth_token", ipOpts)) {
+        return secureResponse(rateLimited(req, "oauth_token", ipOpts));
       }
       return secureResponse(await exchangeToken(req));
     }
 
     if (url.pathname === "/oauth/revoke" && req.method === "POST") {
-      if (!checkRateLimit(req, "oauth_revoke")) {
-        return secureResponse(rateLimited(req, "oauth_revoke"));
+      if (!checkRateLimit(req, "oauth_revoke", ipOpts)) {
+        return secureResponse(rateLimited(req, "oauth_revoke", ipOpts));
       }
       return secureResponse(await revokeToken(req));
     }
@@ -185,8 +186,8 @@ const httpServer = Bun.serve({
       }));
     }
 
-    if (!checkRateLimit(req, "mcp")) {
-      return secureResponse(rateLimited(req, "mcp"));
+    if (!checkRateLimit(req, "mcp", ipOpts)) {
+      return secureResponse(rateLimited(req, "mcp", ipOpts));
     }
 
     const token = bearerToken(req);
