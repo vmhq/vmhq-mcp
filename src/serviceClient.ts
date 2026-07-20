@@ -232,9 +232,40 @@ function filterByDomain(data: unknown, domain: string): unknown {
   });
 }
 
+/** Cap on upstream response bodies (10 MiB) to bound process memory. */
+const MAX_UPSTREAM_BODY_BYTES = 10 * 1024 * 1024;
+
+async function readResponseTextCapped(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`Upstream response exceeded the ${maxBytes}-byte limit.`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(out);
+}
+
 async function parseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
-  const text = await response.text();
+  const text = await readResponseTextCapped(response, MAX_UPSTREAM_BODY_BYTES);
 
   if (!text) {
     return null;

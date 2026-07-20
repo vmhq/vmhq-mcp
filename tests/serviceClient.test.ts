@@ -378,3 +378,23 @@ describe("filterFields prototype-pollution guard", () => {
     expect(filterFields({ real: 1 }, parseFields(["toString", "real"]))).toEqual({ real: 1 });
   });
 });
+
+describe("callService upstream size cap", () => {
+  test("returns an error when the upstream body exceeds the cap", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("x".repeat(11 * 1024 * 1024), {
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    });
+    servers.push(server);
+    const service = { ...baseService, baseUrl: `http://localhost:${server.port}` };
+    const result = (await callService(service, { method: "GET", path: "/big" })) as {
+      error?: { type: string; message: string };
+    };
+    expect(result.error).toBeDefined();
+    expect(result.error?.message).toContain("exceeded");
+  });
+});
