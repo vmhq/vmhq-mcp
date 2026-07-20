@@ -208,6 +208,16 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
   const scope = get("scope") || "mcp";
   const resource = get("resource");
 
+  // RFC 8707 §2.1: the resource parameter must be an absolute URI. Validate it
+  // here so no garbage reaches the persisted state or verifyAccessToken.
+  if (resource) {
+    try {
+      new URL(resource);
+    } catch {
+      return renderAuthorizeError("The resource indicator must be a valid absolute URL.");
+    }
+  }
+
   // 1. Client must exist and redirect URI must be registered (port-agnostic for loopback)
   const client = clients.get(clientId);
   if (!client) {
@@ -426,12 +436,21 @@ export function verifyAccessToken(token: string): AuthInfo | undefined {
     accessTokens.delete(hash);
     return undefined;
   }
+  // Legacy persisted state may hold an invalid resource; never throw here.
+  let resourceUrl: URL | undefined;
+  if (stored.resource) {
+    try {
+      resourceUrl = new URL(stored.resource);
+    } catch {
+      resourceUrl = undefined;
+    }
+  }
   return {
     token,
     clientId: stored.clientId,
     scopes: stored.scopes,
     expiresAt: Math.floor(stored.expiresAt / 1000),
-    ...(stored.resource ? { resource: new URL(stored.resource) } : {}),
+    ...(resourceUrl ? { resource: resourceUrl } : {}),
   };
 }
 

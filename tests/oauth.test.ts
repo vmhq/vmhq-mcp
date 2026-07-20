@@ -659,6 +659,40 @@ describe("token revocation", () => {
   });
 });
 
+// ─── Resource indicator validation (RFC 8707 §2.1) ───────────────────────────
+
+describe("resource indicator validation", () => {
+  test("authorize rejects a non-URL resource indicator", async () => {
+    const clientId = await register("https://client.example.com/cb");
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: "https://client.example.com/cb",
+        code_challenge: s256("verifier-resource"),
+        code_challenge_method: "S256",
+        resource: "not-a-url",
+      }),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("resource");
+  });
+
+  test("verifyAccessToken tolerates a legacy invalid resource value", async () => {
+    const { accessTokens } = await import("../src/oauth/state.js");
+    const token = "legacy-bad-resource-token";
+    accessTokens.set(s256(token), {
+      clientId: "legacy-client",
+      scopes: ["mcp"],
+      resource: "not a url",
+      expiresAt: Date.now() + 60_000,
+    });
+    const info = oauth.verifyAccessToken(token);
+    expect(info).toBeDefined();
+    expect(info?.resource).toBeUndefined();
+  });
+});
+
 // ─── Metadata endpoints ───────────────────────────────────────────────────────
 
 describe("metadata endpoints", () => {
