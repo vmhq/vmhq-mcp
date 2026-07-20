@@ -7,3 +7,7 @@ coverage
 .DS_Store
 .claude/worktrees/
 .rtk/
+
+# Runtime OAuth state (never commit)
+data/*
+!data/.gitkeep
