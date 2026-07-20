@@ -79,6 +79,8 @@ MCP_PUBLIC_URL=https://mcp.example.com
 # Optional. Defaults to <MCP_PUBLIC_URL>/icon.svg (served same-origin, per the MCP icons spec).
 # Set only to override with a different icon.
 # MCP_ICON_URL=https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lovable.svg
+# Required. Minimum 32 characters; the server refuses to start with a weaker token.
+# Generate one with: openssl rand -base64 48
 MCP_ACCESS_TOKEN=change-me
 
 # PocketID identity provider (interactive OAuth login)
@@ -135,10 +137,14 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # MCP_LOG_LEVEL=info
 # Path for persisting OAuth state inside the container (matches the vmhq-mcp-data:/app/data Docker volume).
 # Stored OAuth access tokens are persisted as SHA-256 hashes.
+# The data/ directory is gitignored — runtime OAuth state must never be committed.
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
+# Access token lifetime in seconds for OAuth-issued tokens. Defaults to 2592000 (30 days).
+# MCP_OAUTH_TOKEN_TTL_S=2592000
 # Whether to trust reverse-proxy IP headers for per-IP rate limiting. Defaults to true.
 # Set to false if this server is ever reachable without a trusted reverse proxy in front
 # of it, since those headers are otherwise spoofable and let a caller dodge rate limits.
+# When false, rate limits are keyed by the real socket IP instead.
 # MCP_TRUST_PROXY=true
 ```
 
