@@ -18,6 +18,7 @@ import {
   verifyAccessToken,
 } from "./oauth.js";
 import { checkRateLimit, rateLimitRetryAfterSec } from "./rateLimit.js";
+import { requestBodyTooLarge } from "./httpGuards.js";
 
 function rateLimited(req: Request, bucket: string): Response {
   return json(
@@ -89,6 +90,10 @@ const httpServer = Bun.serve({
       path: url.pathname,
       requestId,
     });
+
+    if (req.method === "POST" && requestBodyTooLarge(req)) {
+      return secureResponse(json({ error: "payload_too_large" }, { status: 413 }));
+    }
 
     if (url.pathname === "/icon.svg") {
       return secureResponse(new Response(iconSvg, {
