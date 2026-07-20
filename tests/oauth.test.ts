@@ -755,3 +755,17 @@ describe("metadata endpoints", () => {
     expect(body.authorization_endpoint).toContain("https://public.example.com");
   });
 });
+
+describe("DCR client expiry", () => {
+  test("prune removes clients older than CLIENT_TTL_MS", async () => {
+    const { clients, CLIENT_TTL_MS } = await import("../src/oauth/state.js");
+    const clientId = await register("https://client.example.com/cb");
+    const stale = clients.get(clientId)!;
+    clients.set(clientId, {
+      ...stale,
+      clientIdIssuedAt: Math.floor((Date.now() - CLIENT_TTL_MS - 1000) / 1000),
+    });
+    oauth.pruneExpiredOAuthState();
+    expect(clients.has(clientId)).toBe(false);
+  });
+});

@@ -72,6 +72,8 @@ const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json"
 export const CODE_TTL_MS = 5 * 60 * 1000;          // 5 min
 export const PENDING_TTL_MS = 10 * 60 * 1000;      // 10 min (PocketID round-trip)
 export const TOKEN_TTL_S = 60 * 60 * 24 * 90;      // 90 days
+/** Clients outlive their tokens: prune TOKEN_TTL + 30 days after issuance. */
+export const CLIENT_TTL_MS = (TOKEN_TTL_S + 30 * 24 * 60 * 60) * 1000;
 
 export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
@@ -156,6 +158,9 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   }
   for (const [hash, tok] of accessTokens) {
     if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
+  }
+  for (const [id, client] of clients) {
+    if (client.clientIdIssuedAt * 1000 + CLIENT_TTL_MS <= now) { clients.delete(id); dirty = true; }
   }
 
   if (dirty) saveState();
