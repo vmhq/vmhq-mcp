@@ -769,3 +769,10 @@ describe("DCR client expiry", () => {
     expect(clients.has(clientId)).toBe(false);
   });
 });
+
+describe("access token TTL", () => {
+  test("default access token TTL is 30 days", async () => {
+    const { TOKEN_TTL_S } = await import("../src/oauth/state.js");
+    expect(TOKEN_TTL_S).toBe(60 * 60 * 24 * 30);
+  });
+});

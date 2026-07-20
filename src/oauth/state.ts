@@ -71,7 +71,16 @@ export const accessTokens = new Map<string, StoredToken>();
 const STATE_PATH = process.env.MCP_OAUTH_STATE_PATH ?? "./data/oauth-state.json";
 export const CODE_TTL_MS = 5 * 60 * 1000;          // 5 min
 export const PENDING_TTL_MS = 10 * 60 * 1000;      // 10 min (PocketID round-trip)
-export const TOKEN_TTL_S = 60 * 60 * 24 * 90;      // 90 days
+/** Access token lifetime, configurable via MCP_OAUTH_TOKEN_TTL_S (seconds). */
+export const TOKEN_TTL_S = (() => {
+  const raw = process.env.MCP_OAUTH_TOKEN_TTL_S;
+  if (!raw) return 60 * 60 * 24 * 30; // 30 days
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("MCP_OAUTH_TOKEN_TTL_S must be a positive number of seconds.");
+  }
+  return value;
+})();
 /** Clients outlive their tokens: prune TOKEN_TTL + 30 days after issuance. */
 export const CLIENT_TTL_MS = (TOKEN_TTL_S + 30 * 24 * 60 * 60) * 1000;
 
