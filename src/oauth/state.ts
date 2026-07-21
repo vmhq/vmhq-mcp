@@ -104,11 +104,18 @@ function loadState(): void {
       accessTokens?: Array<[string, StoredToken | number]>;
     };
 
+    const now = Date.now();
     if (Array.isArray(saved.clients)) {
-      for (const [id, c] of saved.clients) clients.set(id, c);
+      for (const [id, c] of saved.clients) {
+        // Legacy persisted clients predate clientIdIssuedAt; backfill it so
+        // pruneExpiredOAuthState() can age them out (NaN would never expire).
+        if (typeof c.clientIdIssuedAt !== "number" || !Number.isFinite(c.clientIdIssuedAt)) {
+          c.clientIdIssuedAt = Math.floor(now / 1000);
+        }
+        clients.set(id, c);
+      }
     }
 
-    const now = Date.now();
     if (Array.isArray(saved.authorizationCodes)) {
       for (const [code, ac] of saved.authorizationCodes) {
         if (ac.expiresAt > now) codes.set(code, ac);
@@ -169,7 +176,10 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
     if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
   }
   for (const [id, client] of clients) {
-    if (client.clientIdIssuedAt * 1000 + CLIENT_TTL_MS <= now) { clients.delete(id); dirty = true; }
+    // Guard against a non-finite timestamp so the comparison can't silently
+    // evaluate to false and keep a client alive forever.
+    const issuedAtMs = Number.isFinite(client.clientIdIssuedAt) ? client.clientIdIssuedAt * 1000 : 0;
+    if (issuedAtMs + CLIENT_TTL_MS <= now) { clients.delete(id); dirty = true; }
   }
 
   if (dirty) saveState();

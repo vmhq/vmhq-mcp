@@ -768,12 +768,58 @@ describe("DCR client expiry", () => {
     oauth.pruneExpiredOAuthState();
     expect(clients.has(clientId)).toBe(false);
   });
+
+  test("reload backfills a missing clientIdIssuedAt so prune can age the client out", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const { clients } = await import("../src/oauth/state.js");
+    const legacyId = "vmhq_legacy_no_issued_at";
+    // Mimic a client persisted before clientIdIssuedAt existed (no timestamp).
+    writeFileSync(
+      statePath,
+      JSON.stringify({
+        clients: [[legacyId, { clientId: legacyId, redirectUris: ["https://legacy.example.com/cb"], clientName: "Legacy" }]],
+        authorizationCodes: [],
+        pendingAuth: [],
+        accessTokens: [],
+      }),
+    );
+    oauth.reloadPersistedOAuthState();
+    const loaded = clients.get(legacyId);
+    expect(loaded).toBeDefined();
+    expect(Number.isFinite(loaded!.clientIdIssuedAt)).toBe(true);
+    // Backfilled to "now", so a prune keeps it (fresh TTL, not nuked on sight).
+    oauth.pruneExpiredOAuthState();
+    expect(clients.has(legacyId)).toBe(true);
+  });
+
+  test("prune removes a client whose timestamp is non-finite", async () => {
+    const { clients } = await import("../src/oauth/state.js");
+    const id = "vmhq_nan_issued_at";
+    clients.set(id, { clientId: id, clientIdIssuedAt: Number.NaN, redirectUris: ["https://x.example.com/cb"] });
+    oauth.pruneExpiredOAuthState();
+    expect(clients.has(id)).toBe(false);
+  });
 });
 
 describe("access token TTL", () => {
   test("default access token TTL is 30 days", async () => {
     const { TOKEN_TTL_S } = await import("../src/oauth/state.js");
     expect(TOKEN_TTL_S).toBe(60 * 60 * 24 * 30);
+  });
+});
+
+describe("oversized OAuth request bodies", () => {
+  test("token endpoint rejects a body over the size cap with 413", async () => {
+    const { MAX_REQUEST_BODY_BYTES } = await import("../src/httpGuards.js");
+    const oversized = "a".repeat(MAX_REQUEST_BODY_BYTES + 1);
+    const res = await oauth.exchangeToken(
+      new Request("https://mcp.example.com/oauth/token", {
+        method: "POST",
+        body: `grant_type=authorization_code&code=${oversized}`,
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      }),
+    );
+    expect(res.status).toBe(413);
   });
 });
 

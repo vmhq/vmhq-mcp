@@ -41,6 +41,7 @@ import {
   exchangePocketIdCode,
   type PocketIdConfig,
 } from "./pocketid.js";
+import { readBodyTextCapped, RequestBodyTooLargeError } from "../httpGuards.js";
 
 export type OAuthConfig = {
   publicUrl?: string;
@@ -132,7 +133,13 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
 
 export async function registerClient(req: Request): Promise<Response> {
   let body: Record<string, unknown> = {};
-  try { body = await req.json() as Record<string, unknown>; } catch { /* empty body */ }
+  try {
+    const text = await readBodyTextCapped(req);
+    if (text) body = JSON.parse(text) as Record<string, unknown>;
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) return oauthError("invalid_request", 413);
+    /* malformed/empty body → treat as empty */
+  }
 
   const redirectUris = expandRedirectUris(
     Array.isArray(body.redirect_uris)
@@ -172,13 +179,20 @@ export async function registerClient(req: Request): Promise<Response> {
   );
 }
 
+/**
+ * Parse an OAuth request body (JSON or application/x-www-form-urlencoded) with
+ * the size cap enforced during the read. Throws RequestBodyTooLargeError when
+ * the body is oversized; callers translate that to a 413 response.
+ */
 async function parseFormOrJson(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get("content-type") ?? "";
+  const text = await readBodyTextCapped(req);
   if (ct.includes("application/json")) {
-    const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+    let body: Record<string, unknown> = {};
+    try { if (text) body = JSON.parse(text) as Record<string, unknown>; } catch { /* malformed → empty */ }
     return Object.fromEntries(Object.entries(body).map(([k, v]) => [k, String(v ?? "")]));
   }
-  const form = await req.formData();
+  const form = new URLSearchParams(text);
   return Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 }
 
@@ -342,7 +356,13 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
 // ─── POST /oauth/token ────────────────────────────────────────────────────────
 
 export async function exchangeToken(req: Request): Promise<Response> {
-  const params = await parseFormOrJson(req);
+  let params: Record<string, string>;
+  try {
+    params = await parseFormOrJson(req);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) return oauthError("invalid_request", 413);
+    throw err;
+  }
   const {
     grant_type: grantType = "",
     code = "",
@@ -408,7 +428,13 @@ export async function exchangeToken(req: Request): Promise<Response> {
 // ─── POST /oauth/revoke ───────────────────────────────────────────────────────
 
 export async function revokeToken(req: Request): Promise<Response> {
-  const params = await parseFormOrJson(req);
+  let params: Record<string, string>;
+  try {
+    params = await parseFormOrJson(req);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) return oauthError("invalid_request", 413);
+    throw err;
+  }
   const token = params.token ?? "";
   if (!token) return oauthError("invalid_request");
 
