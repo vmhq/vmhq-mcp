@@ -12,24 +12,24 @@ function entryFor(id: string) {
   return entry;
 }
 
-describe("adguard second instance", () => {
-  test("adguard2 is disabled without ADGUARD2_BASE_URL", () => {
-    const service = serviceFromRegistryEntry(entryFor("adguard2"), makeReadEnv({}));
+describe("adguard instance", () => {
+  test("adguard is disabled without ADGUARD_BASE_URL", () => {
+    const service = serviceFromRegistryEntry(entryFor("adguard"), makeReadEnv({}));
     expect(service).toBeUndefined();
   });
 
-  test("adguard2 builds from its own env vars", () => {
+  test("adguard builds from its own env vars", () => {
     const service = serviceFromRegistryEntry(
-      entryFor("adguard2"),
+      entryFor("adguard"),
       makeReadEnv({
-        ADGUARD2_BASE_URL: "https://adguard2.example.com",
-        ADGUARD2_USERNAME: "admin",
-        ADGUARD2_PASSWORD: "secret",
+        ADGUARD_BASE_URL: "https://adguard.example.com",
+        ADGUARD_USERNAME: "admin",
+        ADGUARD_PASSWORD: "secret",
       }),
     );
 
-    expect(service?.id).toBe("adguard2");
-    expect(service?.baseUrl).toBe("https://adguard2.example.com");
+    expect(service?.id).toBe("adguard");
+    expect(service?.baseUrl).toBe("https://adguard.example.com");
     expect(service?.defaultPathPrefix).toBe("/control");
     expect(service?.auth).toEqual({
       type: "static",
@@ -38,34 +38,31 @@ describe("adguard second instance", () => {
     });
   });
 
-  test("adguard2 ignores primary ADGUARD_* credentials", () => {
+  test("adguard sets auth none when credentials are empty", () => {
     const service = serviceFromRegistryEntry(
-      entryFor("adguard2"),
+      entryFor("adguard"),
       makeReadEnv({
-        ADGUARD2_BASE_URL: "https://adguard2.example.com",
-        ADGUARD_USERNAME: "admin",
-        ADGUARD_PASSWORD: "secret",
+        ADGUARD_BASE_URL: "https://adguard.example.com",
       }),
     );
 
     expect(service?.auth).toEqual({ type: "none" });
   });
 
-  test("adguard2 throws when only one credential is set", () => {
+  test("adguard throws when only one credential is set", () => {
     expect(() =>
       serviceFromRegistryEntry(
-        entryFor("adguard2"),
+        entryFor("adguard"),
         makeReadEnv({
-          ADGUARD2_BASE_URL: "https://adguard2.example.com",
-          ADGUARD2_USERNAME: "admin",
+          ADGUARD_BASE_URL: "https://adguard.example.com",
+          ADGUARD_USERNAME: "admin",
         }),
       ),
-    ).toThrow("ADGUARD2_USERNAME and ADGUARD2_PASSWORD must be configured together.");
+    ).toThrow("ADGUARD_USERNAME and ADGUARD_PASSWORD must be configured together.");
   });
 
-  test("adguard2 catalog reuses the adguard endpoints", () => {
-    expect(API_CATALOGS.adguard2.service).toBe("adguard2");
-    expect(API_CATALOGS.adguard2.endpoints).toBe(API_CATALOGS.adguard.endpoints);
-    expect(API_CATALOGS.adguard2.auth).toContain("ADGUARD2_USERNAME");
+  test("adguard catalog has expected properties", () => {
+    expect(API_CATALOGS.adguard.service).toBe("adguard");
+    expect(API_CATALOGS.adguard.auth).toContain("ADGUARD_USERNAME");
   });
 });
