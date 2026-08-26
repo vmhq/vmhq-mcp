@@ -120,6 +120,24 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const ICON_MIME_BY_EXTENSION: Record<string, string> = {
+  svg: "image/svg+xml",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+};
+
+function iconMetadata(iconUrl: string): { src: string; mimeType?: string; sizes?: string[] } {
+  const extension = new URL(iconUrl, "http://localhost").pathname.split(".").pop()?.toLowerCase() ?? "";
+  const mimeType = ICON_MIME_BY_EXTENSION[extension];
+  return {
+    src: iconUrl,
+    ...(mimeType ? { mimeType } : {}),
+    ...(mimeType === "image/svg+xml" ? { sizes: ["any"] } : {}),
+  };
+}
+
 function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, requestId?: string): void {
   server.tool(
     "vmhq_status",
@@ -319,12 +337,7 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
-    icons: [
-      {
-        src: iconUrl,
-        mimeType: "image/png",
-      },
-    ],
+    icons: [iconMetadata(iconUrl)],
   });
 
   const enabledServiceIds = new Set(services.map((service) => service.id));

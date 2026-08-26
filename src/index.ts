@@ -101,6 +101,9 @@ const httpServer = Bun.serve({
         headers: {
           "Content-Type": "image/svg+xml",
           "Cache-Control": "public, max-age=86400",
+          // Icons must be fetchable cross-origin by web MCP clients (claude.ai)
+          "Access-Control-Allow-Origin": "*",
+          "Cross-Origin-Resource-Policy": "cross-origin",
         },
       }));
     }
