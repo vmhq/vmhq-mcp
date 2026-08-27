@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SERVICE_REGISTRY, serviceFromRegistryEntry } from "../src/serviceRegistry.js";
+import { isPrivateHost, SERVICE_REGISTRY, serviceFromRegistryEntry } from "../src/serviceRegistry.js";
 import { API_CATALOGS } from "../src/apiCatalog.js";
 
 function makeReadEnv(env: Record<string, string>) {
@@ -64,5 +64,87 @@ describe("adguard instance", () => {
   test("adguard catalog has expected properties", () => {
     expect(API_CATALOGS.adguard.service).toBe("adguard");
     expect(API_CATALOGS.adguard.auth).toContain("ADGUARD_USERNAME");
+  });
+});
+
+describe("proxmox insecure TLS", () => {
+  const baseEnv = {
+    PROXMOX_BASE_URL: "https://192.168.3.10:8006",
+    PROXMOX_TOKEN_ID: "root@pam!mcp",
+    PROXMOX_TOKEN_SECRET: "secret",
+  };
+
+  test("TLS verification stays on by default", () => {
+    const service = serviceFromRegistryEntry(entryFor("proxmox"), makeReadEnv(baseEnv));
+    expect(service?.insecureTls).toBe(false);
+  });
+
+  test("PROXMOX_INSECURE_TLS=true disables verification for a private host", () => {
+    const service = serviceFromRegistryEntry(
+      entryFor("proxmox"),
+      makeReadEnv({ ...baseEnv, PROXMOX_INSECURE_TLS: "true" }),
+    );
+    expect(service?.insecureTls).toBe(true);
+  });
+
+  test("other services are unaffected by the flag", () => {
+    const service = serviceFromRegistryEntry(
+      entryFor("memos"),
+      makeReadEnv({ MEMOS_BASE_URL: "https://192.168.3.10", PROXMOX_INSECURE_TLS: "true" }),
+    );
+    expect(service?.insecureTls).toBe(false);
+  });
+
+  test("a non-truthy value keeps verification on", () => {
+    const service = serviceFromRegistryEntry(
+      entryFor("proxmox"),
+      makeReadEnv({ ...baseEnv, PROXMOX_INSECURE_TLS: "false" }),
+    );
+    expect(service?.insecureTls).toBe(false);
+  });
+
+  test("throws when enabled for a public host", () => {
+    expect(() =>
+      serviceFromRegistryEntry(
+        entryFor("proxmox"),
+        makeReadEnv({ ...baseEnv, PROXMOX_BASE_URL: "https://pve.example.com:8006", PROXMOX_INSECURE_TLS: "true" }),
+      ),
+    ).toThrow("may only be enabled for private-network hosts");
+  });
+});
+
+describe("isPrivateHost", () => {
+  test("accepts loopback, RFC1918, CGNAT and local names", () => {
+    for (const host of [
+      "localhost",
+      "127.0.0.1",
+      "::1",
+      "10.1.2.3",
+      "192.168.3.10",
+      "172.16.0.1",
+      "172.31.255.254",
+      "169.254.1.1",
+      "100.64.0.1",
+      "vmhq.local",
+      "pve.internal",
+      "fd00::1",
+    ]) {
+      expect(isPrivateHost(host)).toBe(true);
+    }
+  });
+
+  test("rejects public hosts and near-miss ranges", () => {
+    for (const host of [
+      "example.com",
+      "8.8.8.8",
+      "172.15.0.1",
+      "172.32.0.1",
+      "192.169.0.1",
+      "100.63.0.1",
+      "100.128.0.1",
+      "2606:4700::1111",
+    ]) {
+      expect(isPrivateHost(host)).toBe(false);
+    }
   });
 });

@@ -23,6 +23,12 @@ export type ServiceDefinition = {
   defaultPathParams?: Record<string, string>;
   timeoutMs?: number;
   pingPath?: string;
+  /**
+   * Skip TLS certificate verification for this service only. Intended for
+   * upstreams on the local network that present a self-signed certificate
+   * (e.g. Proxmox VE's cluster CA). Only honoured for private/loopback hosts.
+   */
+  insecureTls?: boolean;
 };
 
 export const SERVICE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;

@@ -120,6 +120,9 @@ ADGUARD_PASSWORD=
 # Token ID format: USER@REALM!TOKENID
 PROXMOX_TOKEN_ID=root@pam!mcp
 PROXMOX_TOKEN_SECRET=
+# Skip TLS verification for Proxmox only (self-signed PVE cluster CA on :8006).
+# Only accepted when PROXMOX_BASE_URL points at a private-network host.
+# PROXMOX_INSECURE_TLS=true
 
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
