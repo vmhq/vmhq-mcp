@@ -388,6 +388,9 @@ export async function callService(
       headers,
       body,
       signal: controller.signal,
+      // Scoped to this service only; the global TLS defaults stay intact for
+      // every other upstream. See ServiceDefinition.insecureTls.
+      ...(service.insecureTls ? { tls: { rejectUnauthorized: false } } : {}),
     });
 
     let responseBody = await parseBody(response);

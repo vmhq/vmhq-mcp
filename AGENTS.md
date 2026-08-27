@@ -34,6 +34,8 @@ Only `MCP_ACCESS_TOKEN` is required at startup (server crashes without it). All 
 
 A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No error, no tools registered. Registry entries with `enabledWhenEnv` are disabled unless that env var is present. Service tokens are read lazily at request time from `process.env` — missing tokens produce a normalized `missing_upstream_credentials` tool error instead of crashing.
 
+`PROXMOX_INSECURE_TLS=true` disables TLS certificate verification for the Proxmox upstream only, for nodes serving the self-signed PVE cluster CA on `:8006`. It is resolved declaratively via `insecureTlsEnv` in `serviceRegistry.ts` and applied as a per-request `tls: { rejectUnauthorized: false }` option on that service's `fetch`, so every other upstream keeps verifying normally (unlike the process-wide `NODE_TLS_REJECT_UNAUTHORIZED=0`). `readInsecureTls()` throws at startup if the flag is set while the base URL points at a public host, as checked by `isPrivateHost()`.
+
 `HOME_ASSISTANT_PINNED_ENTITIES` is an optional comma-separated list of Home Assistant entity IDs, each with an optional `:Alias` suffix:
 
 ```
