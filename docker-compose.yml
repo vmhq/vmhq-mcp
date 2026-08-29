@@ -10,6 +10,8 @@ services:
       - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
     volumes:
       - vmhq-mcp-data:/app/data
+      # Mount the SSH key used by the Proxmox shell tools (PROXMOX_SSH_KEY_PATH).
+      # - ./secrets/proxmox_id_ed25519:/app/data/ssh/id_ed25519:ro
     restart: unless-stopped
 
 volumes:
