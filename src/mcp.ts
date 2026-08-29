@@ -3,6 +3,15 @@ import { z } from "zod";
 import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
+import {
+  assertVmidAllowed,
+  isSshFailure,
+  lxcCommand,
+  nodeCommand,
+  parsePctList,
+  runSshCommand,
+  type ProxmoxSshConfig,
+} from "./sshClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMethod, type ServiceRequestInput } from "./services.js";
 
 const queryValueSchema = z.union([
@@ -138,12 +147,12 @@ function iconMetadata(iconUrl: string): { src: string; mimeType?: string; sizes?
   };
 }
 
-function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, requestId?: string): void {
+function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, requestId?: string, proxmoxSsh?: ProxmoxSshConfig): void {
   server.tool(
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
     {
-      ping: z.boolean().optional().describe("If true, attempt a lightweight GET to each enabled service to verify it is reachable. Uses a 3 s timeout regardless of the service timeout setting."),
+      ping: z.boolean().optional().describe("If true, attempt a lightweight GET to each enabled service (and an SSH login when Proxmox SSH is configured) to verify it is reachable. Uses a 3 s timeout regardless of the service timeout setting."),
     },
     { title: "VMHQ Status" },
     async ({ ping }: { ping?: boolean }) => {
@@ -181,13 +190,38 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
             return [service.id, { status: resp.ok ? "ok" : "error", httpStatus: resp.status, durationMs }] as const;
           }),
         );
-        pingResults = Object.fromEntries(entries);
+        const results: Record<string, unknown> = Object.fromEntries(entries);
+
+        if (proxmoxSsh) {
+          const start = performance.now();
+          const sshResult = await runSshCommand(proxmoxSsh, "true", {
+            timeoutMs: PING_TIMEOUT_MS,
+            target: "node",
+            requestId,
+          });
+          const durationMs = Math.round(performance.now() - start);
+          results.proxmox_ssh = isSshFailure(sshResult)
+            ? { status: sshResult.error.type === "ssh_timeout" ? "timeout" : "error", reason: sshResult.error.type, durationMs }
+            : { status: sshResult.ok ? "ok" : "error", durationMs };
+        }
+
+        pingResults = results;
       }
 
       return textResult({
         status: "ok",
         enabledServices: enabled,
         disabledServices: disabled,
+        ...(proxmoxSsh
+          ? {
+              proxmoxSsh: {
+                host: proxmoxSsh.host,
+                user: proxmoxSsh.user,
+                tools: ["proxmox_lxc_list", "proxmox_lxc_exec", "proxmox_node_exec"],
+                ...(proxmoxSsh.allowedVmids ? { allowedVmids: proxmoxSsh.allowedVmids } : {}),
+              },
+            }
+          : {}),
         ...(pingResults ? { ping: pingResults } : {}),
         iconUrl,
       });
@@ -333,7 +367,105 @@ function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefi
   );
 }
 
-export function createMcpServer(services: ServiceDefinition[], iconUrl: string, upstreamTimeoutMs = 30_000, pinnedHaEntities: PinnedHaEntity[] = [], requestId?: string): McpServer {
+const sshExecFields = {
+  stdin: z.string().optional().describe("Optional text piped to the command's stdin. Useful for writing files, e.g. command \"tee /etc/motd\" with the file contents as stdin."),
+  timeoutMs: z.number().optional().describe("Optional override for this command's timeout in milliseconds. Raise it for long maintenance runs such as apt upgrade."),
+  maxLength: z.number().optional().describe("Optional maximum length in characters for stdout and stderr. Longer output is truncated and the dropped character count is reported."),
+};
+
+/**
+ * Shell tools for maintaining the Proxmox node. Registered only when
+ * PROXMOX_SSH_HOST is configured, because they expose an unrestricted shell:
+ * the boundary is the SSH credential itself, not this tool surface.
+ */
+function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, requestId?: string): void {
+  const allowlistNote = ssh.allowedVmids
+    ? ` Only these container IDs are reachable: ${ssh.allowedVmids.join(", ")}.`
+    : "";
+
+  server.tool(
+    "proxmox_lxc_list",
+    `List the LXC containers on the Proxmox node ${ssh.host} with their VMID, status and name, by running pct list over SSH. Call this first to discover container IDs for proxmox_lxc_exec.${allowlistNote}`,
+    {},
+    { title: "Proxmox LXC List", readOnlyHint: true },
+    async () => {
+      const result = await runSshCommand(ssh, nodeCommand(ssh, "pct list"), { target: "node", requestId });
+
+      if (isSshFailure(result) || !result.ok) {
+        return errorResult(result);
+      }
+
+      const containers = parsePctList(result.stdout).filter(
+        (entry) => !ssh.allowedVmids || ssh.allowedVmids.includes(entry.vmid),
+      );
+
+      return textResult({
+        host: ssh.host,
+        total: containers.length,
+        containers,
+        ...(containers.length === 0 ? { raw: result.stdout } : {}),
+      });
+    },
+  );
+
+  server.tool(
+    "proxmox_lxc_exec",
+    `Run a shell command inside an LXC container on ${ssh.host}, via pct exec over SSH. The command string is interpreted by ${ssh.containerShell} inside the container, so pipes, redirects, && and heredocs all work. The container must be running. Use proxmox_lxc_list to find VMIDs. This is a real root shell inside the container: it can install packages, edit configuration and restart services. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive).${allowlistNote}`,
+    {
+      vmid: z.number().int().positive().describe("Container ID (VMID), for example 101."),
+      command: z.string().min(1).describe("Shell command to run inside the container, for example: systemctl restart nginx"),
+      shell: z.string().optional().describe(`Shell used inside the container. Defaults to ${ssh.containerShell}; use /bin/bash when the command needs bash syntax.`),
+      ...sshExecFields,
+    },
+    { title: "Proxmox LXC Exec", destructiveHint: true, openWorldHint: true },
+    async ({ vmid, command, shell, stdin, timeoutMs, maxLength }: { vmid: number; command: string; shell?: string; stdin?: string; timeoutMs?: number; maxLength?: number }) => {
+      const rejection = assertVmidAllowed(ssh, vmid);
+      if (rejection) {
+        return errorResult({ error: { type: "invalid_request", service: "proxmox_ssh", message: rejection, retryable: false } });
+      }
+
+      const result = await runSshCommand(ssh, lxcCommand(ssh, vmid, command, shell), {
+        stdin,
+        timeoutMs,
+        maxOutputChars: maxLength,
+        target: `lxc:${vmid}`,
+        requestId,
+      });
+
+      return isSshFailure(result) ? errorResult(result, maxLength) : textResult(result, maxLength);
+    },
+  );
+
+  server.tool(
+    "proxmox_node_exec",
+    `Run a shell command on the Proxmox node ${ssh.host} itself, over SSH. The command string is interpreted by the node shell, so pipes, redirects, && and heredocs all work. Use this to maintain the hypervisor: pct/qm lifecycle commands, pveversion, journalctl, systemctl, apt, zfs/lvm, /etc/pve configuration. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive). To run something inside a container, prefer proxmox_lxc_exec.`,
+    {
+      command: z.string().min(1).describe("Shell command to run on the node, for example: pveversion -v"),
+      ...sshExecFields,
+    },
+    { title: "Proxmox Node Exec", destructiveHint: true, openWorldHint: true },
+    async ({ command, stdin, timeoutMs, maxLength }: { command: string; stdin?: string; timeoutMs?: number; maxLength?: number }) => {
+      const result = await runSshCommand(ssh, nodeCommand(ssh, command), {
+        stdin,
+        timeoutMs,
+        maxOutputChars: maxLength,
+        target: "node",
+        requestId,
+      });
+
+      return isSshFailure(result) ? errorResult(result, maxLength) : textResult(result, maxLength);
+    },
+  );
+}
+
+export function createMcpServer(
+  services: ServiceDefinition[],
+  iconUrl: string,
+  upstreamTimeoutMs = 30_000,
+  pinnedHaEntities: PinnedHaEntity[] = [],
+  requestId?: string,
+  proxmoxSsh?: ProxmoxSshConfig,
+): McpServer {
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
@@ -343,7 +475,11 @@ export function createMcpServer(services: ServiceDefinition[], iconUrl: string, 
   const enabledServiceIds = new Set(services.map((service) => service.id));
   const homeAssistantService = services.find((service) => service.id === "home_assistant");
 
-  registerStatusTools(server, services, enabledServiceIds, iconUrl, requestId);
+  registerStatusTools(server, services, enabledServiceIds, iconUrl, requestId, proxmoxSsh);
+
+  if (proxmoxSsh) {
+    registerProxmoxSshTools(server, proxmoxSsh, requestId);
+  }
 
   for (const service of services) {
     registerServiceTools(server, service, upstreamTimeoutMs, requestId);

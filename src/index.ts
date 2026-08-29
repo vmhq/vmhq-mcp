@@ -59,7 +59,7 @@ function secureResponse(resp: Response): Response {
 }
 
 async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId: string): Promise<Response> {
-  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, config.pinnedHaEntities, requestId);
+  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, config.pinnedHaEntities, requestId, config.proxmoxSsh);
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);

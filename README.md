@@ -22,6 +22,8 @@ Each service exposes three tool types:
 - `*_operation`: executes a documented operation by `operationId`.
 - `*_request`: calls any relative endpoint as an escape hatch for new or uncatalogued endpoints.
 
+Proxmox additionally supports optional SSH shell tools, so an agent can maintain the node and its LXC containers. See [Proxmox SSH](#proxmox-ssh).
+
 ## Local development
 
 ```bash
@@ -124,6 +126,34 @@ PROXMOX_TOKEN_SECRET=
 # Only accepted when PROXMOX_BASE_URL points at a private-network host.
 # PROXMOX_INSECURE_TLS=true
 
+# Proxmox SSH (shell access for a maintainer agent)
+# Setting PROXMOX_SSH_HOST registers proxmox_lxc_list, proxmox_lxc_exec and
+# proxmox_node_exec. The Proxmox REST API has no exec endpoint for LXC, so
+# running commands inside a container means SSH + pct exec on the node.
+# WARNING: these tools are an unrestricted shell on the hypervisor. Whoever can
+# call /mcp can run anything the SSH user can run. Scope the SSH credential
+# itself (dedicated user + restricted sudoers) if you want narrower access.
+# PROXMOX_SSH_HOST=192.168.1.10
+# PROXMOX_SSH_PORT=22
+# PROXMOX_SSH_USER=root
+# One of the three below. The key never leaves the server.
+# PROXMOX_SSH_KEY_PATH=/app/data/ssh/id_ed25519
+# PROXMOX_SSH_KEY="-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+# PROXMOX_SSH_KEY_PASSPHRASE=
+# PROXMOX_SSH_PASSWORD=
+# Pinned host key, OpenSSH format. Required when the node is not on a private
+# network. Get it with: ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -
+# PROXMOX_SSH_HOST_FINGERPRINT=SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# Set true when PROXMOX_SSH_USER is not root; commands run via sudo -n.
+# PROXMOX_SSH_SUDO=false
+# Restrict which containers proxmox_lxc_exec can reach. Empty means all of them.
+# PROXMOX_SSH_ALLOWED_VMIDS=101,102
+# Default shell used inside containers. Alpine guests have no bash.
+# PROXMOX_SSH_CONTAINER_SHELL=/bin/sh
+# Per-command timeout and output cap. Defaults: 120000 ms and 30000 characters.
+# PROXMOX_SSH_TIMEOUT_MS=120000
+# PROXMOX_SSH_MAX_OUTPUT=30000
+
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
 
@@ -222,6 +252,7 @@ For each service:
 - `karakeep_api_reference`, `karakeep_operation`, `karakeep_request`
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
+- `proxmox_lxc_list`, `proxmox_lxc_exec`, `proxmox_node_exec` — SSH shell tools (enabled by `PROXMOX_SSH_HOST`)
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `adguard_api_reference`, `adguard_operation`, `adguard_request`
 
@@ -256,6 +287,33 @@ Example with path parameters:
   }
 }
 ```
+
+## Proxmox SSH
+
+The Proxmox REST API has no exec endpoint for LXC containers — only QEMU guests expose one, through the guest agent. Running a command inside a container therefore means SSHing into the node and calling `pct exec`. Setting `PROXMOX_SSH_HOST` enables three tools for that:
+
+- `proxmox_lxc_list` — runs `pct list` and returns the containers as JSON (`vmid`, `status`, `lock`, `name`).
+- `proxmox_lxc_exec` — runs a shell command inside a container: `pct exec <vmid> -- /bin/sh -c '<command>'`.
+- `proxmox_node_exec` — runs a shell command on the node itself (`pveversion`, `systemctl`, `journalctl`, `apt`, `zfs`, …).
+
+Both exec tools take a full command string interpreted by a remote shell, so pipes, redirects, `&&` and heredocs work as typed. They also accept `stdin` (handy for writing files with `tee`), a per-call `timeoutMs`, and `maxLength` to cap output. Non-zero exit codes come back as a normal result with `exitCode`, `stdout` and `stderr`; only transport problems (timeout, auth, host key, connection) are returned as errors.
+
+```json
+{
+  "vmid": 101,
+  "command": "systemctl restart nginx && systemctl is-active nginx"
+}
+```
+
+**These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
+
+- Give the MCP its own SSH key, used by nothing else, and mount it read-only (`PROXMOX_SSH_KEY_PATH`).
+- To narrow access below root, create a dedicated node user, grant it exactly the commands you want in `sudoers`, and set `PROXMOX_SSH_SUDO=true`.
+- Set `PROXMOX_SSH_ALLOWED_VMIDS` when the agent only maintains some containers.
+- Pin the node's host key with `PROXMOX_SSH_HOST_FINGERPRINT`. It is required when the node is not on a private network, and the server refuses to start without it there.
+- Every command is logged as a structured `ssh_exec_started` / `ssh_exec_finished` event, so `MCP_LOG_LEVEL=info` gives you an audit trail.
+
+Each command opens its own SSH connection; nothing is kept between requests, matching the stateless design of the rest of the server.
 
 ## Free-form requests
 
