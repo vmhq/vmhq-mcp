@@ -32,6 +32,11 @@ type TestServer = { port: number; close: () => void };
 /** Boots an in-process SSH server so exec behaviour is exercised end to end. */
 async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean } = {}): Promise<TestServer> {
   const server = new Server({ hostKeys: [hostKeyPem] }, (client: Connection) => {
+    // The host-key tests make the client disconnect mid-handshake, which the
+    // server reports as KEY_EXCHANGE_FAILED. Without a listener ssh2 rethrows
+    // it as an uncaught exception that lands on whichever test is running by
+    // then, so swallow the errors this harness provokes on purpose.
+    client.on("error", () => {});
     client.on("authentication", (ctx) => (options.rejectAuth ? ctx.reject(["password"], false) : ctx.accept()));
     client.on("ready", () => {
       client.on("session", (accept) => {
@@ -56,6 +61,8 @@ async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean
       });
     });
   });
+
+  server.on("error", () => {});
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const port = (server.address() as { port: number }).port;
