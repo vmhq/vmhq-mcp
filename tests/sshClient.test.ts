@@ -1,12 +1,13 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { Server, utils, type Connection } from "ssh2";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   assertVmidAllowed,
   backgroundScript,
   jobPaths,
+  jobPurgeCommand,
   jobStatusScript,
   JOB_ID_PATTERN,
   newJobId,
@@ -88,6 +89,7 @@ function configFor(port: number, overrides: Partial<ProxmoxSshConfig> = {}): Pro
     sudo: false,
     containerShell: "/bin/sh",
     jobDir: "/var/log/vmhq-mcp",
+    jobRetentionDays: 30,
     ...overrides,
   };
 }
@@ -361,6 +363,53 @@ describe("background jobs", () => {
     expect(running.exitCode).toBeUndefined();
 
     expect(parseJobStatus("abc123abc123", "sudo: a password is required")).toMatchObject({ state: "not_found", log: "" });
+  });
+
+  test("prunes only job files, and only past the retention window", () => {
+    const purge = jobPurgeCommand(configFor(22, { jobDir: "/var/log/vmhq-mcp/" }));
+
+    expect(purge).toContain("find '/var/log/vmhq-mcp' -maxdepth 1 -type f");
+    expect(purge).toContain(String.raw`\( -name '*.log' -o -name '*.pid' -o -name '*.status' \)`);
+    expect(purge).toContain("-mtime +30");
+    // A failed prune must never take the launch down with it.
+    expect(purge).toContain("|| true");
+  });
+
+  test("skips pruning when retention is disabled", () => {
+    expect(jobPurgeCommand(configFor(22, { jobRetentionDays: 0 }))).toBeUndefined();
+    expect(jobPurgeCommand(configFor(22, { jobRetentionDays: -1 }))).toBeUndefined();
+    expect(backgroundScript(configFor(22, { jobRetentionDays: 0 }), "echo hi", "abc123abc123")).not.toContain("find ");
+  });
+
+  test("launching a job prunes stale files and leaves recent ones alone", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/vmhq-jobs-`);
+    const config = configFor(22, { jobDir: dir });
+    const ancient = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+
+    for (const name of ["old.log", "old.pid", "old.status"]) {
+      writeFileSync(`${dir}/${name}`, "stale");
+      utimesSync(`${dir}/${name}`, ancient, ancient);
+    }
+    // Not a job file, and an old one: the prune must not touch it.
+    writeFileSync(`${dir}/keep.txt`, "unrelated");
+    utimesSync(`${dir}/keep.txt`, ancient, ancient);
+    writeFileSync(`${dir}/recent.log`, "fresh");
+
+    const jobId = newJobId();
+    const proc = Bun.spawn(["/bin/sh", "-c", backgroundScript(config, "true", jobId)], { stdout: "ignore", stderr: "ignore" });
+    await proc.exited;
+
+    try {
+      const left = readdirSync(dir).sort();
+      expect(left).not.toContain("old.log");
+      expect(left).not.toContain("old.pid");
+      expect(left).not.toContain("old.status");
+      expect(left).toContain("keep.txt");
+      expect(left).toContain("recent.log");
+      expect(left).toContain(`${jobId}.log`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   /**

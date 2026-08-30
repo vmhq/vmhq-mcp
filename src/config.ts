@@ -104,6 +104,7 @@ export function loadProxmoxSshConfig(): ProxmoxSshConfig | undefined {
     sudo: readEnv("PROXMOX_SSH_SUDO").toLowerCase() === "true",
     containerShell: readEnv("PROXMOX_SSH_CONTAINER_SHELL", "/bin/sh"),
     jobDir: readEnv("PROXMOX_SSH_JOB_DIR", "/var/log/vmhq-mcp"),
+    jobRetentionDays: readNumberEnv("PROXMOX_SSH_JOB_RETENTION_DAYS", 30),
   };
 }
 

@@ -28,6 +28,7 @@ const SSH_ENV_VARS = [
   "PROXMOX_SSH_SUDO",
   "PROXMOX_SSH_CONTAINER_SHELL",
   "PROXMOX_SSH_JOB_DIR",
+  "PROXMOX_SSH_JOB_RETENTION_DAYS",
 ] as const;
 
 afterEach(() => {
@@ -52,6 +53,7 @@ describe("loadProxmoxSshConfig", () => {
       sudo: false,
       containerShell: "/bin/sh",
       jobDir: "/var/log/vmhq-mcp",
+      jobRetentionDays: 30,
     });
   });
 
@@ -63,6 +65,7 @@ describe("loadProxmoxSshConfig", () => {
     process.env.PROXMOX_SSH_CONTAINER_SHELL = "/bin/bash";
     process.env.PROXMOX_SSH_ALLOWED_VMIDS = "101, 102 ,103";
     process.env.PROXMOX_SSH_JOB_DIR = "/srv/vmhq-jobs";
+    process.env.PROXMOX_SSH_JOB_RETENTION_DAYS = "7";
 
     const config = loadProxmoxSshConfig();
     expect(config).toMatchObject({
@@ -73,6 +76,7 @@ describe("loadProxmoxSshConfig", () => {
       containerShell: "/bin/bash",
       allowedVmids: [101, 102, 103],
       jobDir: "/srv/vmhq-jobs",
+      jobRetentionDays: 7,
     });
   });
 

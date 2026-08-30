@@ -156,6 +156,8 @@ PROXMOX_TOKEN_SECRET=
 # Where background jobs (background: true) keep their log, pid and status files,
 # on the node or inside the container. Default: /var/log/vmhq-mcp
 # PROXMOX_SSH_JOB_DIR=/var/log/vmhq-mcp
+# Days a job's files are kept. Each launch prunes older ones. 0 disables it.
+# PROXMOX_SSH_JOB_RETENTION_DAYS=30
 
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
@@ -330,7 +332,9 @@ The real limit on a long command is not `PROXMOX_SSH_TIMEOUT_MS` but the MCP cli
 | `orphaned` | the process is gone but never recorded an exit code (node rebooted, OOM killer, a command the shell could not parse) |
 | `not_found` | no such job in the job directory |
 
-The command runs in a subshell, so an `exit` inside it ends the job without stopping the wrapper from recording the exit code. Logs are not cleaned up automatically: a finished job can still be read later, and the files are plain text under `PROXMOX_SSH_JOB_DIR` if you want to prune them.
+The command runs in a subshell, so an `exit` inside it ends the job without stopping the wrapper from recording the exit code.
+
+Job files are kept for `PROXMOX_SSH_JOB_RETENTION_DAYS` (default 30, `0` disables it) so a finished job can still be read back later. Each launch prunes what has aged out, which needs no timer in this otherwise stateless server; the prune only ever matches the `.log`, `.pid` and `.status` files a job creates, so pointing `PROXMOX_SSH_JOB_DIR` at a shared directory cannot make it delete anything else. A job that runs for longer than the retention window without writing any output would have its files pruned by a later launch — give such jobs a heartbeat (`echo` on a loop) or set the window wider.
 
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 

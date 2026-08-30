@@ -30,6 +30,8 @@ export type ProxmoxSshConfig = {
   containerShell: string;
   /** Directory where background jobs write their log, pid and status files. */
   jobDir: string;
+  /** Days a finished job's files are kept before a later launch prunes them. 0 disables pruning. */
+  jobRetentionDays: number;
 };
 
 export type SshErrorType =
@@ -409,14 +411,32 @@ export function newJobId(): string {
 
 export type JobPaths = { dir: string; logPath: string; statusPath: string; pidPath: string };
 
+function normalizeJobDir(config: ProxmoxSshConfig): string {
+  return config.jobDir.replace(/\/+$/u, "");
+}
+
 export function jobPaths(config: ProxmoxSshConfig, jobId: string): JobPaths {
-  const dir = config.jobDir.replace(/\/+$/u, "");
+  const dir = normalizeJobDir(config);
   return {
     dir,
     logPath: `${dir}/${jobId}.log`,
     statusPath: `${dir}/${jobId}.status`,
     pidPath: `${dir}/${jobId}.pid`,
   };
+}
+
+/**
+ * Prunes job files older than the retention window. It runs from the launcher
+ * rather than on a timer because this server keeps no state between requests,
+ * and it only ever matches the three file names a job creates, so pointing
+ * PROXMOX_SSH_JOB_DIR at a shared directory cannot turn it into an rm -rf.
+ */
+export function jobPurgeCommand(config: ProxmoxSshConfig): string | undefined {
+  const days = Math.trunc(config.jobRetentionDays);
+  if (!Number.isFinite(days) || days <= 0) return undefined;
+
+  const names = String.raw`\( -name '*.log' -o -name '*.pid' -o -name '*.status' \)`;
+  return `find ${shellQuote(normalizeJobDir(config))} -maxdepth 1 -type f ${names} -mtime +${days} -exec rm -f {} ';' 2> /dev/null || true`;
 }
 
 /**
@@ -441,8 +461,11 @@ export function backgroundScript(config: ProxmoxSshConfig, command: string, jobI
   // nohup is the fallback for minimal containers that ship without it.
   const detach = `${runner} -c ${quotedWrapper} < /dev/null > /dev/null 2>&1 &`;
 
+  const purge = jobPurgeCommand(config);
+
   return [
     `mkdir -p ${shellQuote(paths.dir)} || exit 1`,
+    ...(purge ? [purge] : []),
     // Creating the log here makes the job observable before the wrapper has
     // had a chance to record its pid, so an immediate status check reads
     // "starting" instead of "no such job".
