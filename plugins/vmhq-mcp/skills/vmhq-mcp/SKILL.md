@@ -1,6 +1,6 @@
 ---
 name: vmhq-mcp
-description: Use when the user asks to work with their personal VMHQ MCP services, including Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and AdGuard Home.
+description: Use when the user asks to work with their personal VMHQ MCP services, including Miniflux, Karakeep, SearXNG, Proxmox, Memos, and AdGuard Home.
 ---
 
 # VMHQ MCP
@@ -9,7 +9,6 @@ Use the `vmhq` MCP server for personal infrastructure and self-hosted service ta
 
 ## Services
 
-- Home Assistant: smart home status and control through the MCP tools.
 - Miniflux: RSS feed and article workflows.
 - Karakeep: saved links and knowledge capture.
 - SearXNG: private metasearch.

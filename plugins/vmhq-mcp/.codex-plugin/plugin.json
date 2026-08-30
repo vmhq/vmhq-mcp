@@ -1,7 +1,7 @@
 {
   "name": "vmhq-mcp",
   "version": "0.1.0",
-  "description": "Personal VMHQ MCP connector for Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS.",
+  "description": "Personal VMHQ MCP connector for Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS.",
   "author": {
     "name": "VMHQ",
     "email": "vicentem@vmhq.cl",
@@ -13,7 +13,6 @@
   "keywords": [
     "mcp",
     "codex",
-    "home-assistant",
     "miniflux",
     "karakeep",
     "searxng",
@@ -26,7 +25,7 @@
   "interface": {
     "displayName": "VMHQ MCP",
     "shortDescription": "Connect Codex to your personal VMHQ MCP tools",
-    "longDescription": "Use the VMHQ MCP plugin to connect Codex to your remote personal MCP endpoint for Home Assistant, Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS. The plugin stores no secrets; Codex reads the bearer token from VMHQ_MCP_API_KEY.",
+    "longDescription": "Use the VMHQ MCP plugin to connect Codex to your remote personal MCP endpoint for Miniflux, Karakeep, SearXNG, Proxmox, Memos, and NextDNS. The plugin stores no secrets; Codex reads the bearer token from VMHQ_MCP_API_KEY.",
     "developerName": "VMHQ",
     "category": "Productivity",
     "capabilities": [
@@ -40,7 +39,7 @@
     "defaultPrompt": [
       "List my available VMHQ MCP tools",
       "Search the web with my SearXNG MCP",
-      "Check my Home Assistant status"
+      "Check my Proxmox node status"
     ],
     "brandColor": "#0F766E",
     "composerIcon": "./assets/icon.svg",

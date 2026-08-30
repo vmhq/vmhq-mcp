@@ -1,5 +1,4 @@
 export type ServiceId =
-  | "home_assistant"
   | "miniflux"
   | "karakeep"
   | "searxng"
@@ -42,5 +41,4 @@ export type ServiceRequestInput = {
   headers?: Record<string, string>;
   fields?: string[];
   maxLength?: number;
-  domain?: string;
 };

@@ -81,7 +81,6 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
     services: config.services,
     iconUrl: config.iconUrl,
     upstreamTimeoutMs: config.upstreamTimeoutMs,
-    pinnedHaEntities: config.pinnedHaEntities,
     requestId,
     actor: actorFrom(authInfo),
     proxmoxSsh: config.proxmoxSsh,

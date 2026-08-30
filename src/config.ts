@@ -42,7 +42,6 @@ function requireAccessToken(): string {
   return token;
 }
 
-export type PinnedHaEntity = { entityId: string; alias?: string };
 
 export type AppConfig = {
   port: number;
@@ -52,7 +51,6 @@ export type AppConfig = {
   corsOrigin?: string;
   upstreamTimeoutMs: number;
   services: ServiceDefinition[];
-  pinnedHaEntities: PinnedHaEntity[];
   /** PocketID identity provider for the interactive OAuth flow (optional). */
   pocketId?: PocketIdConfig;
   /** SSH access to the Proxmox node, enabling shell tools (optional). */
@@ -188,19 +186,6 @@ export function loadConfig(): AppConfig {
     (service): service is ServiceDefinition => service !== undefined,
   );
 
-  const rawPinnedEntities = readEnv("HOME_ASSISTANT_PINNED_ENTITIES");
-  const pinnedHaEntities: PinnedHaEntity[] = rawPinnedEntities
-    ? rawPinnedEntities.split(",").flatMap((s) => {
-        const trimmed = s.trim();
-        if (!trimmed) return [];
-        const colonIdx = trimmed.indexOf(":");
-        if (colonIdx === -1) return [{ entityId: trimmed }];
-        const entityId = trimmed.slice(0, colonIdx).trim();
-        const alias = trimmed.slice(colonIdx + 1).trim();
-        return entityId ? [{ entityId, alias: alias || undefined }] : [];
-      })
-    : [];
-
   const proxmoxSsh = loadProxmoxSshConfig();
 
   // Registration is public and accepts any HTTPS destination, so running
@@ -243,7 +228,6 @@ export function loadConfig(): AppConfig {
     corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
     services,
-    pinnedHaEntities,
     pocketId: loadPocketIdConfig(),
     proxmoxSsh,
     grantSummary: describeGrants(services, proxmoxSsh),
