@@ -84,6 +84,63 @@ export function isRegistrableRedirectUri(uri: string): boolean {
 }
 
 /**
+ * Optional hard allowlist of redirect destinations, from
+ * MCP_ALLOWED_REDIRECT_HOSTS (comma-separated hostnames).
+ *
+ * Dynamic client registration is public by design, and isRegistrableRedirectUri()
+ * accepts any HTTPS host, so without an allowlist anyone can register a client
+ * pointing at a host they control and phish an authorization code out of the
+ * one person who can sign in. Loopback and private-use schemes stay allowed
+ * regardless: they deliver the code to an app on the user's own machine.
+ *
+ * When the variable is unset every host is accepted (the pre-existing
+ * behaviour); loadConfig() warns about that at startup.
+ */
+export function allowedRedirectHosts(): string[] {
+  return (process.env.MCP_ALLOWED_REDIRECT_HOSTS ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** True when a host matches an allowlist entry exactly or as a subdomain of it. */
+function hostMatches(hostname: string, allowed: string): boolean {
+  return hostname === allowed || hostname.endsWith(`.${allowed}`);
+}
+
+export function isAllowedRedirectTarget(uri: string, allowed = allowedRedirectHosts()): boolean {
+  if (allowed.length === 0) return true;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(uri);
+  } catch {
+    return false;
+  }
+
+  // Loopback and private-use schemes (claude://, cursor://) hand the code to a
+  // local app, not to a remote host, so an allowlist of hosts cannot judge them.
+  if (LOOPBACK.has(parsed.hostname)) return true;
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return true;
+
+  const hostname = parsed.hostname.toLowerCase();
+  return allowed.some((entry) => hostMatches(hostname, entry));
+}
+
+/** Human-readable destination shown on the consent page. */
+export function redirectTargetLabel(uri: string): string {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return `${parsed.protocol}//${parsed.hostname || parsed.pathname}`.replace(/\/+$/u, "");
+    }
+    return parsed.host;
+  } catch {
+    return uri;
+  }
+}
+
+/**
  * RFC 8252 §7.3 – when matching redirect URIs at authorize time, loopback
  * addresses must accept any port (native clients bind an ephemeral port).
  * All other URIs require an exact match.

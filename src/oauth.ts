@@ -9,17 +9,19 @@
  *   ./oauth/views.ts       – authorization error + success HTML
  *   ./oauth/endpoints.ts   – HTTP handlers + token verification
  */
-export type { OAuthConfig } from "./oauth/endpoints.js";
+export type { OAuthConfig, SessionSummary } from "./oauth/endpoints.js";
 export {
   OAUTH_CORS_HEADERS,
   authorizationServerMetadata,
   beginAuthorize,
   exchangeToken,
   isOAuthAccessToken,
+  listSessions,
   mcpUrl,
   oauthCallback,
   protectedResourceMetadata,
   registerClient,
+  revokeSessions,
   revokeToken,
   unauthorized,
   verifyAccessToken,

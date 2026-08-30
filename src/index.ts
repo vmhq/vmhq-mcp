@@ -1,18 +1,20 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createMcpServer } from "./mcp.js";
+import { createMcpServer, type ToolTier } from "./mcp.js";
 import { loadConfig } from "./config.js";
 import { log } from "./logger.js";
 import { generateOpenApiSpec, renderSwaggerUI } from "./openapi.js";
 import {
   authorizationServerMetadata,
   beginAuthorize,
+  listSessions,
   constantTimeEqual,
   exchangeToken,
   OAUTH_CORS_HEADERS,
   oauthCallback,
   protectedResourceMetadata,
   registerClient,
+  revokeSessions,
   revokeToken,
   unauthorized,
   verifyAccessToken,
@@ -31,7 +33,12 @@ function rateLimited(req: Request, bucket: string, ipOpts: ClientIpOptions): Res
 }
 
 const config = loadConfig();
-const oauthConfig = { publicUrl: config.publicUrl, iconUrl: config.iconUrl, pocketId: config.pocketId };
+const oauthConfig = {
+  publicUrl: config.publicUrl,
+  iconUrl: config.iconUrl,
+  pocketId: config.pocketId,
+  grantSummary: config.grantSummary,
+};
 const iconSvg = await Bun.file(new URL("./assets/icon.svg", import.meta.url)).text();
 // Services and publicUrl are fixed at startup, so the spec never changes across requests.
 const openApiSpecJson = JSON.stringify(generateOpenApiSpec(config.services, config.publicUrl));
@@ -58,8 +65,29 @@ function secureResponse(resp: Response): Response {
   return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
 }
 
-async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId: string): Promise<Response> {
-  const server = createMcpServer(config.services, config.iconUrl, config.upstreamTimeoutMs, config.pinnedHaEntities, requestId, config.proxmoxSsh);
+/**
+ * Who to name in the logs for this request. OAuth tokens carry the identity
+ * PocketID asserted; the static token has no person behind it, and tokens
+ * issued before identities were recorded read as "legacy".
+ */
+function actorFrom(authInfo: AuthInfo | undefined): string {
+  if (!authInfo) return "static-token";
+  const actor = authInfo.extra?.actor;
+  return typeof actor === "string" && actor ? actor : "legacy";
+}
+
+async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId: string, tier: ToolTier): Promise<Response> {
+  const server = createMcpServer({
+    services: config.services,
+    iconUrl: config.iconUrl,
+    upstreamTimeoutMs: config.upstreamTimeoutMs,
+    pinnedHaEntities: config.pinnedHaEntities,
+    requestId,
+    actor: actorFrom(authInfo),
+    proxmoxSsh: config.proxmoxSsh,
+    tier,
+    sessions: { list: listSessions, revoke: revokeSessions },
+  });
   const transport = new WebStandardStreamableHTTPServerTransport();
 
   await server.connect(transport);
@@ -69,6 +97,7 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
   } catch (error) {
     log("error", "mcp_request_failed", {
       requestId,
+      actor: actorFrom(authInfo),
       error: error instanceof Error ? error.message : String(error),
       ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
     });
@@ -76,7 +105,22 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
   }
 }
 
-const AUTHENTICATED_PATHS = new Set(["/mcp", "/openapi.json", "/docs"]);
+/**
+ * The MCP endpoints, and the tool tier each one hands out.
+ *
+ * `/mcp` keeps every tool, so existing clients are unaffected. `/mcp/read` is
+ * the endpoint to point a day-to-day client at: same services, same auth, but
+ * no Proxmox shell. Everything this server reads (search results, RSS articles,
+ * bookmarks) is text written by someone else that lands in the same model
+ * context as the tool list, so a session that only reads should not also be
+ * holding a root shell on the hypervisor.
+ */
+const MCP_ENDPOINTS: Record<string, ToolTier> = {
+  "/mcp": "admin",
+  "/mcp/read": "read",
+};
+
+const AUTHENTICATED_PATHS = new Set([...Object.keys(MCP_ENDPOINTS), "/openapi.json", "/docs"]);
 
 const httpServer = Bun.serve({
   port: config.port,
@@ -113,6 +157,7 @@ const httpServer = Bun.serve({
         status: "ok",
         name: "vmhq-mcp",
         mcpUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp` : undefined,
+        mcpReadUrl: config.publicUrl ? `${config.publicUrl.replace(/\/$/, "")}/mcp/read` : undefined,
         iconUrl: config.iconUrl,
       }));
     }
@@ -131,8 +176,15 @@ const httpServer = Bun.serve({
       });
     }
 
-    if (url.pathname === "/.well-known/oauth-protected-resource") {
-      return secureResponse(protectedResourceMetadata(oauthConfig, req));
+    // RFC 9728 allows the resource path to be appended to the well-known path,
+    // which is how a client discovers /mcp/read rather than assuming /mcp.
+    const PRM_PREFIX = "/.well-known/oauth-protected-resource";
+    if (url.pathname === PRM_PREFIX || url.pathname.startsWith(`${PRM_PREFIX}/`)) {
+      const resourcePath = url.pathname.slice(PRM_PREFIX.length) || "/mcp";
+      if (!(resourcePath in MCP_ENDPOINTS)) {
+        return secureResponse(json({ error: "not_found" }, { status: 404 }));
+      }
+      return secureResponse(protectedResourceMetadata(oauthConfig, req, resourcePath));
     }
 
     if (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration") {
@@ -198,7 +250,7 @@ const httpServer = Bun.serve({
     const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token);
 
     if (!isStaticToken && !oauthInfo) {
-      return unauthorized(oauthConfig, req);
+      return unauthorized(oauthConfig, req, url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp");
     }
 
     if (url.pathname === "/openapi.json") {
@@ -218,13 +270,14 @@ const httpServer = Bun.serve({
       );
     }
 
-    const response = await handleMcp(req, oauthInfo, requestId);
+    const response = await handleMcp(req, oauthInfo, requestId, MCP_ENDPOINTS[url.pathname] ?? "admin");
     log("info", "mcp_request_finished", {
       method: req.method,
       path: url.pathname,
       status: response.status,
       durationMs: Math.round(performance.now() - startedAt),
       requestId,
+      actor: actorFrom(oauthInfo),
     });
     return secureResponse(response);
   },
@@ -232,7 +285,8 @@ const httpServer = Bun.serve({
 
 log("info", "server_started", { url: `http://0.0.0.0:${config.port}/mcp` });
 if (config.publicUrl) {
-  log("info", "server_public_url", { url: `${config.publicUrl.replace(/\/$/, "")}/mcp` });
+  const root = config.publicUrl.replace(/\/$/, "");
+  log("info", "server_public_url", { url: `${root}/mcp`, readUrl: `${root}/mcp/read` });
 }
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

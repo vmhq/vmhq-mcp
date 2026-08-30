@@ -332,6 +332,8 @@ export type CallServiceOptions = {
   timeoutMs?: number;
   operationId?: string;
   requestId?: string;
+  /** Who is running this, for the audit trail. See RequestContext in mcp.ts. */
+  actor?: string;
 };
 
 export async function callService(
@@ -378,6 +380,7 @@ export async function callService(
     service: service.id,
     operationId: options.operationId,
     requestId: options.requestId,
+    actor: options.actor,
     method: input.method,
     path: url.pathname,
   });
@@ -408,6 +411,7 @@ export async function callService(
       service: service.id,
       operationId: options.operationId,
       requestId: options.requestId,
+      actor: options.actor,
       method: input.method,
       path: url.pathname,
       status: response.status,
@@ -445,6 +449,7 @@ export async function callService(
       service: service.id,
       operationId: options.operationId,
       requestId: options.requestId,
+      actor: options.actor,
       method: input.method,
       path: url.pathname,
       durationMs,

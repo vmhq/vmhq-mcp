@@ -1,6 +1,8 @@
 import type { ServiceDefinition } from "./services.js";
+import { allowedRedirectHosts } from "./oauth/redirectUri.js";
+import { log } from "./logger.js";
 import { isPrivateHost, serviceFromRegistryEntry, SERVICE_REGISTRY } from "./serviceRegistry.js";
-import type { ProxmoxSshConfig } from "./sshClient.js";
+import { isAllowedShell, type ProxmoxSshConfig } from "./sshClient.js";
 import type { PocketIdConfig } from "./oauth.js";
 
 function readEnv(name: string, fallback?: string): string {
@@ -55,7 +57,31 @@ export type AppConfig = {
   pocketId?: PocketIdConfig;
   /** SSH access to the Proxmox node, enabling shell tools (optional). */
   proxmoxSsh?: ProxmoxSshConfig;
+  /** Plain-language capabilities of an issued token, shown on the consent page. */
+  grantSummary: string[];
 };
+
+/**
+ * What a token issued through the OAuth flow can actually reach. The consent
+ * page shows this, so someone deciding whether to continue is told that they
+ * are handing over a root shell rather than "access to an MCP server".
+ */
+export function describeGrants(services: ServiceDefinition[], proxmoxSsh?: ProxmoxSshConfig): string[] {
+  const grants: string[] = [];
+
+  if (proxmoxSsh) {
+    const scope = proxmoxSsh.allowedVmids
+      ? `containers ${proxmoxSsh.allowedVmids.join(", ")}`
+      : "the node and every container";
+    grants.push(`A root shell on ${proxmoxSsh.host} (${scope}), as ${proxmoxSsh.user}`);
+  }
+
+  for (const service of services) {
+    grants.push(`Full read and write access to ${service.title}`);
+  }
+
+  return grants;
+}
 
 function parseVmidList(raw: string): number[] | undefined {
   const vmids = raw
@@ -93,6 +119,18 @@ export function loadProxmoxSshConfig(): ProxmoxSshConfig | undefined {
     );
   }
 
+  // The container shell is spliced into the node-level `pct exec` command, so
+  // an operator typo with a space or a metacharacter must fail at startup
+  // rather than at the first exec.
+  // Trimmed before validating: a stray space pasted into a deployment UI is an
+  // operator typo, not an injection attempt, and must not keep the server down.
+  const containerShell = readEnv("PROXMOX_SSH_CONTAINER_SHELL", "/bin/sh").trim() || "/bin/sh";
+  if (!isAllowedShell(containerShell)) {
+    throw new Error(
+      `PROXMOX_SSH_CONTAINER_SHELL must be an absolute path to an interpreter, for example /bin/sh. Got: ${containerShell}`,
+    );
+  }
+
   return {
     host,
     port: readNumberEnv("PROXMOX_SSH_PORT", 22),
@@ -102,7 +140,7 @@ export function loadProxmoxSshConfig(): ProxmoxSshConfig | undefined {
     maxOutputChars: readNumberEnv("PROXMOX_SSH_MAX_OUTPUT", 30_000),
     allowedVmids: parseVmidList(readEnv("PROXMOX_SSH_ALLOWED_VMIDS")),
     sudo: readEnv("PROXMOX_SSH_SUDO").toLowerCase() === "true",
-    containerShell: readEnv("PROXMOX_SSH_CONTAINER_SHELL", "/bin/sh"),
+    containerShell,
     jobDir: readEnv("PROXMOX_SSH_JOB_DIR", "/var/log/vmhq-mcp"),
     jobRetentionDays: readNumberEnv("PROXMOX_SSH_JOB_RETENTION_DAYS", 30),
   };
@@ -139,6 +177,26 @@ export function loadConfig(): AppConfig {
       })
     : [];
 
+  const proxmoxSsh = loadProxmoxSshConfig();
+
+  // Registration is public and accepts any HTTPS destination, so running
+  // without an allowlist means a stranger's client can ask the one person who
+  // can sign in for a code. Say so once at startup instead of only on the
+  // consent page, which is seen too late to change the configuration.
+  if (allowedRedirectHosts().length === 0) {
+    log("error", "oauth_redirect_allowlist_not_configured", {
+      hint: "Set MCP_ALLOWED_REDIRECT_HOSTS (e.g. claude.ai) so authorization codes can only be delivered to clients you expect.",
+    });
+  }
+
+  const allowedSubjects = readEnv("MCP_ALLOWED_SUBJECTS")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (allowedSubjects.length > 0) {
+    log("info", "oauth_subject_allowlist_configured", { count: allowedSubjects.length });
+  }
+
   const publicUrl = readEnv("MCP_PUBLIC_URL") || undefined;
   const defaultIconUrl = publicUrl
     ? `${publicUrl.replace(/\/$/, "")}/icon.svg`
@@ -154,6 +212,7 @@ export function loadConfig(): AppConfig {
     services,
     pinnedHaEntities,
     pocketId: loadPocketIdConfig(),
-    proxmoxSsh: loadProxmoxSshConfig(),
+    proxmoxSsh,
+    grantSummary: describeGrants(services, proxmoxSsh),
   };
 }

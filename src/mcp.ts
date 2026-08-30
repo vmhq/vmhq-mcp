@@ -4,6 +4,7 @@ import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import {
+  assertShellAllowed,
   assertVmidAllowed,
   backgroundScript,
   isSshFailure,
@@ -19,6 +20,35 @@ import {
   type ProxmoxSshConfig,
 } from "./sshClient.js";
 import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMethod, type ServiceRequestInput } from "./services.js";
+
+/**
+ * Which tools a session gets. "admin" is everything; "read" leaves out the
+ * Proxmox exec tools, so a session that ingests untrusted text cannot reach a
+ * root shell. Chosen per endpoint in index.ts, not per request.
+ */
+export type ToolTier = "read" | "admin";
+
+/**
+ * Who is making this request and under which request id. Threaded into every
+ * upstream call and shell command so the logs name a person, not just a client
+ * id: with a root shell on the hypervisor reachable through these tools, "which
+ * token" is not an answer to "who ran this".
+ */
+/**
+ * Session inventory, injected rather than imported: importing the OAuth module
+ * here would drag its load-time state read into anything that builds a server,
+ * including tests that have nothing to do with OAuth.
+ */
+export type SessionStore = {
+  list: () => unknown[];
+  revoke: (filter: { actor?: string; clientId?: string; all?: boolean }) => number;
+};
+
+export type RequestContext = {
+  requestId?: string;
+  /** email ?? sub, or "static-token" / "legacy". See actorFor() in oauth/state.ts. */
+  actor?: string;
+};
 
 const queryValueSchema = z.union([
   z.string(),
@@ -153,7 +183,7 @@ function iconMetadata(iconUrl: string): { src: string; mimeType?: string; sizes?
   };
 }
 
-function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, requestId?: string, proxmoxSsh?: ProxmoxSshConfig): void {
+function registerStatusTools(server: McpServer, services: ServiceDefinition[], enabledServiceIds: Set<ServiceId>, iconUrl: string, tier: ToolTier, ctx: RequestContext, proxmoxSsh?: ProxmoxSshConfig): void {
   server.tool(
     "vmhq_status",
     "Return VMHQ MCP status, enabled services and disabled services. This tool is always available even when no service APIs are configured.",
@@ -178,7 +208,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
             const result = await callService(
               service,
               { method: "GET", path: service.pingPath },
-              { timeoutMs: PING_TIMEOUT_MS, operationId: "ping", requestId },
+              { timeoutMs: PING_TIMEOUT_MS, operationId: "ping", ...ctx },
             );
             const durationMs = Math.round(performance.now() - start);
             const res = result as Record<string, unknown>;
@@ -203,7 +233,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
           const sshResult = await runSshCommand(proxmoxSsh, "true", {
             timeoutMs: PING_TIMEOUT_MS,
             target: "node",
-            requestId,
+            ...ctx,
           });
           const durationMs = Math.round(performance.now() - start);
           results.proxmox_ssh = isSshFailure(sshResult)
@@ -216,6 +246,10 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
 
       return textResult({
         status: "ok",
+        tier,
+        ...(tier === "read"
+          ? { tierNote: "Read tier: the Proxmox shell tools are not available on this endpoint. Use the admin endpoint for node maintenance." }
+          : {}),
         enabledServices: enabled,
         disabledServices: disabled,
         ...(proxmoxSsh
@@ -223,7 +257,10 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
               proxmoxSsh: {
                 host: proxmoxSsh.host,
                 user: proxmoxSsh.user,
-                tools: ["proxmox_lxc_list", "proxmox_lxc_exec", "proxmox_node_exec", "proxmox_job_status"],
+                tools:
+                  tier === "admin"
+                    ? ["proxmox_lxc_list", "proxmox_lxc_exec", "proxmox_node_exec", "proxmox_job_status"]
+                    : ["proxmox_lxc_list", "proxmox_job_status"],
                 ...(proxmoxSsh.allowedVmids ? { allowedVmids: proxmoxSsh.allowedVmids } : {}),
               },
             }
@@ -273,7 +310,51 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
   );
 }
 
-function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, requestId?: string): void {
+/**
+ * Lets whoever holds the admin tier see and cut the credentials this server has
+ * issued. Without it, `POST /oauth/revoke` can only kill a token you already
+ * hold — so a token you suspect was leaked, and therefore do not have, is
+ * exactly the one you cannot revoke.
+ */
+function registerSessionTools(server: McpServer, sessions: SessionStore, ctx: RequestContext): void {
+  server.tool(
+    "vmhq_sessions",
+    "List or revoke the OAuth sessions this MCP server has issued. Use action 'list' to see who currently holds a token, and 'revoke' to cut access for a person, a client, or everyone. Revoking removes the access token and its refresh token together, so the session cannot renew itself.",
+    {
+      action: z.enum(["list", "revoke"]).describe("'list' shows active sessions; 'revoke' cuts them."),
+      actor: z.string().optional().describe("For revoke: the person to cut off, by email or OIDC subject, as shown by list."),
+      clientId: z.string().optional().describe("For revoke: cut every session belonging to this registered client."),
+      all: z.boolean().optional().describe("For revoke: cut every session on the server. Requires no other filter."),
+    },
+    { title: "VMHQ Sessions", destructiveHint: true },
+    async ({ action, actor, clientId, all }: { action: "list" | "revoke"; actor?: string; clientId?: string; all?: boolean }) => {
+      if (action === "list") {
+        const active = sessions.list();
+        return textResult({ total: active.length, sessions: active });
+      }
+
+      if (!actor && !clientId && !all) {
+        return errorResult({
+          error: {
+            type: "invalid_request",
+            service: "vmhq",
+            message: "Revoking needs a filter: pass actor, clientId, or all: true.",
+            retryable: false,
+          },
+        });
+      }
+
+      const revoked = sessions.revoke({ actor, clientId, all });
+      return textResult({
+        revoked,
+        filter: all ? { all: true } : { ...(actor ? { actor } : {}), ...(clientId ? { clientId } : {}) },
+        by: ctx.actor,
+      });
+    },
+  );
+}
+
+function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, ctx: RequestContext): void {
   server.tool(
     `${service.id}_api_reference`,
     `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
@@ -321,7 +402,7 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
           maxLength: input.maxLength,
           domain: input.domain,
         },
-        { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, requestId },
+        { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, ...ctx },
       );
 
       return textResult({ operation: endpoint, result }, input.maxLength);
@@ -334,13 +415,13 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
     serviceRequestSchema,
     { title: `${service.title} Request` },
     async (input: ServiceRequestInput) => {
-      const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, requestId });
+      const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, ...ctx });
       return textResult(result, input.maxLength);
     },
   );
 }
 
-function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, requestId?: string): void {
+function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, ctx: RequestContext): void {
   const pinnedSummary = pinnedHaEntities
     .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
     .join(", ");
@@ -358,7 +439,7 @@ function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefi
           callService(
             service,
             { method: "GET", path: `/api/states/${entityId}`, fields },
-            { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", requestId },
+            { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", ...ctx },
           ),
         ),
       );
@@ -384,8 +465,15 @@ const sshExecFields = {
  * Shell tools for maintaining the Proxmox node. Registered only when
  * PROXMOX_SSH_HOST is configured, because they expose an unrestricted shell:
  * the boundary is the SSH credential itself, not this tool surface.
+ *
+ * On the "read" tier the two exec tools are left out entirely. Everything this
+ * server reads — search results, RSS articles, bookmarks — is third-party text
+ * that lands in the same model context as the tools, so a session that only
+ * needs to read has no business also holding a root shell. Leaving the tools
+ * unregistered is what makes that separation real: an instruction smuggled into
+ * an article cannot call a tool the session was never given.
  */
-function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, requestId?: string): void {
+function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, tier: ToolTier, ctx: RequestContext): void {
   const allowlistNote = ssh.allowedVmids
     ? ` Only these container IDs are reachable: ${ssh.allowedVmids.join(", ")}.`
     : "";
@@ -420,7 +508,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
     const target = vmid === undefined ? "node" : `lxc:${vmid}`;
     const script = backgroundScript(ssh, command, jobId, vmid === undefined ? undefined : options.shell || ssh.containerShell);
     const wrapped = vmid === undefined ? nodeCommand(ssh, script) : lxcCommand(ssh, vmid, script, options.shell);
-    const result = await runSshCommand(ssh, wrapped, { timeoutMs: options.timeoutMs, target, requestId });
+    const result = await runSshCommand(ssh, wrapped, { timeoutMs: options.timeoutMs, target, ...ctx });
 
     if (isSshFailure(result) || !result.ok) {
       return errorResult(result, options.maxLength);
@@ -449,7 +537,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
     {},
     { title: "Proxmox LXC List", readOnlyHint: true },
     async () => {
-      const result = await runSshCommand(ssh, nodeCommand(ssh, "pct list"), { target: "node", requestId });
+      const result = await runSshCommand(ssh, nodeCommand(ssh, "pct list"), { target: "node", ...ctx });
 
       if (isSshFailure(result) || !result.ok) {
         return errorResult(result);
@@ -468,6 +556,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
     },
   );
 
+  function registerProxmoxExecTools(): void {
   server.tool(
     "proxmox_lxc_exec",
     `Run a shell command inside an LXC container on ${ssh.host}, via pct exec over SSH. The command string is interpreted by ${ssh.containerShell} inside the container, so pipes, redirects, && and heredocs all work. The container must be running. Use proxmox_lxc_list to find VMIDs. This is a real root shell inside the container: it can install packages, edit configuration and restart services. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive).${backgroundNote}${allowlistNote}`,
@@ -479,7 +568,9 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
     },
     { title: "Proxmox LXC Exec", destructiveHint: true, openWorldHint: true },
     async ({ vmid, command, shell, stdin, timeoutMs, maxLength, background }: { vmid: number; command: string; shell?: string; stdin?: string; timeoutMs?: number; maxLength?: number; background?: boolean }) => {
-      const rejection = assertVmidAllowed(ssh, vmid);
+      // The shell lands in the node-level `pct exec` command, so an unvalidated
+      // value would run on the hypervisor instead of inside the container.
+      const rejection = assertVmidAllowed(ssh, vmid) ?? assertShellAllowed(shell);
       if (rejection) {
         return errorResult({ error: { type: "invalid_request", service: "proxmox_ssh", message: rejection, retryable: false } });
       }
@@ -493,7 +584,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
         timeoutMs,
         maxOutputChars: maxLength,
         target: `lxc:${vmid}`,
-        requestId,
+        ...ctx,
       });
 
       return isSshFailure(result) ? errorResult(result, maxLength) : textResult(result, maxLength);
@@ -518,12 +609,16 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
         timeoutMs,
         maxOutputChars: maxLength,
         target: "node",
-        requestId,
+        ...ctx,
       });
 
       return isSshFailure(result) ? errorResult(result, maxLength) : textResult(result, maxLength);
     },
   );
+
+  }
+
+  if (tier === "admin") registerProxmoxExecTools();
 
   server.tool(
     "proxmox_job_status",
@@ -554,7 +649,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
       const script = jobStatusScript(ssh, jobId, tailLines ?? 200);
       const target = vmid === undefined ? "node" : `lxc:${vmid}`;
       const wrapped = vmid === undefined ? nodeCommand(ssh, script) : lxcCommand(ssh, vmid, script);
-      const result = await runSshCommand(ssh, wrapped, { maxOutputChars: maxLength, target, requestId });
+      const result = await runSshCommand(ssh, wrapped, { maxOutputChars: maxLength, target, ...ctx });
 
       if (isSshFailure(result)) {
         return errorResult(result, maxLength);
@@ -567,14 +662,35 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
   );
 }
 
-export function createMcpServer(
-  services: ServiceDefinition[],
-  iconUrl: string,
-  upstreamTimeoutMs = 30_000,
-  pinnedHaEntities: PinnedHaEntity[] = [],
-  requestId?: string,
-  proxmoxSsh?: ProxmoxSshConfig,
-): McpServer {
+export type CreateMcpServerOptions = {
+  services: ServiceDefinition[];
+  iconUrl: string;
+  upstreamTimeoutMs?: number;
+  pinnedHaEntities?: PinnedHaEntity[];
+  requestId?: string;
+  /** email ?? sub of the caller, or "static-token" / "legacy". */
+  actor?: string;
+  proxmoxSsh?: ProxmoxSshConfig;
+  /** Defaults to "admin" so an omitted tier can never silently widen access. */
+  tier?: ToolTier;
+  /** Enables the admin-tier vmhq_sessions tool. Omitted means no such tool. */
+  sessions?: SessionStore;
+};
+
+export function createMcpServer(options: CreateMcpServerOptions): McpServer {
+  const {
+    services,
+    iconUrl,
+    upstreamTimeoutMs = 30_000,
+    pinnedHaEntities = [],
+    requestId,
+    actor,
+    proxmoxSsh,
+    tier = "admin",
+    sessions,
+  } = options;
+
+  const ctx: RequestContext = { requestId, actor };
   const server = new McpServer({
     name: "vmhq-mcp",
     version: "0.1.0",
@@ -584,17 +700,22 @@ export function createMcpServer(
   const enabledServiceIds = new Set(services.map((service) => service.id));
   const homeAssistantService = services.find((service) => service.id === "home_assistant");
 
-  registerStatusTools(server, services, enabledServiceIds, iconUrl, requestId, proxmoxSsh);
+  registerStatusTools(server, services, enabledServiceIds, iconUrl, tier, ctx, proxmoxSsh);
+
+  // Cutting other people's access is an administrative act, not a read.
+  if (tier === "admin" && sessions) {
+    registerSessionTools(server, sessions, ctx);
+  }
 
   if (proxmoxSsh) {
-    registerProxmoxSshTools(server, proxmoxSsh, requestId);
+    registerProxmoxSshTools(server, proxmoxSsh, tier, ctx);
   }
 
   for (const service of services) {
-    registerServiceTools(server, service, upstreamTimeoutMs, requestId);
+    registerServiceTools(server, service, upstreamTimeoutMs, ctx);
 
     if (service === homeAssistantService && pinnedHaEntities.length > 0) {
-      registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, requestId);
+      registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, ctx);
     }
   }
 

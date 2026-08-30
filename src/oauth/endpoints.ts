@@ -14,20 +14,29 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { log } from "../logger.js";
 import {
   accessTokens,
+  actorFor,
   clients,
   codes,
   CODE_TTL_MS,
   pendingAuth,
   PENDING_TTL_MS,
   pruneExpiredOAuthState,
+  consumedRefreshTokens,
+  refreshTokens,
+  REFRESH_TOKEN_TTL_S,
+  revokeFamily,
   saveState,
   sha256,
   TOKEN_TTL_S,
+  type Identity,
   type RegisteredClient,
 } from "./state.js";
 import {
+  allowedRedirectHosts,
   expandRedirectUris,
+  isAllowedRedirectTarget,
   isRegistrableRedirectUri,
+  redirectTargetLabel,
   redirectUriMatches,
 } from "./redirectUri.js";
 import {
@@ -48,6 +57,11 @@ export type OAuthConfig = {
   iconUrl?: string;
   /** PocketID identity provider. When unset, interactive authorization is disabled. */
   pocketId?: PocketIdConfig;
+  /**
+   * Plain-language list of what an issued token can reach, shown on the consent
+   * page so the user is told what they are handing over before they hand it over.
+   */
+  grantSummary?: string[];
 };
 
 // ─── CORS headers (required for browser-based OAuth discovery) ────────────────
@@ -57,6 +71,24 @@ export const OAUTH_CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 } as const;
+
+/**
+ * Optional allowlist of who may sign in, from MCP_ALLOWED_SUBJECTS (comma
+ * separated OIDC `sub` values or emails). Unset means PocketID's own per-client
+ * group restriction remains the only gate, which is the pre-existing behaviour.
+ */
+function allowedSubjects(): string[] {
+  return (process.env.MCP_ALLOWED_SUBJECTS ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isAllowedSubject(identity: Identity, allowed = allowedSubjects()): boolean {
+  if (allowed.length === 0) return true;
+  const candidates = [identity.subject, identity.email].filter(Boolean).map((v) => v!.toLowerCase());
+  return candidates.some((value) => allowed.includes(value));
+}
 
 function oauthError(error: string, status = 400): Response {
   return Response.json({ error }, { status, headers: OAUTH_CORS_HEADERS });
@@ -79,27 +111,34 @@ function callbackUri(config: OAuthConfig, req: Request): string {
 
 // ─── Discovery metadata ───────────────────────────────────────────────────────
 
-/** 401 response with RFC 9728 WWW-Authenticate header */
-export function unauthorized(config: OAuthConfig, req: Request): Response {
+/**
+ * 401 response with RFC 9728 WWW-Authenticate header.
+ *
+ * `resourcePath` is the MCP endpoint being protected, so a server exposing more
+ * than one (e.g. /mcp and /mcp/read) points each at its own metadata document
+ * instead of at a single one describing a resource the client never asked for.
+ */
+export function unauthorized(config: OAuthConfig, req: Request, resourcePath = "/mcp"): Response {
   const root = baseUrl(config, req);
+  const metadataUrl = `${root}/.well-known/oauth-protected-resource${resourcePath === "/mcp" ? "" : resourcePath}`;
   return Response.json(
     { error: "unauthorized" },
     {
       status: 401,
       headers: {
-        "WWW-Authenticate": `Bearer realm="${root}", resource_metadata="${root}/.well-known/oauth-protected-resource"`,
+        "WWW-Authenticate": `Bearer realm="${root}", resource_metadata="${metadataUrl}"`,
         ...OAUTH_CORS_HEADERS,
       },
     },
   );
 }
 
-/** RFC 9728 – /.well-known/oauth-protected-resource */
-export function protectedResourceMetadata(config: OAuthConfig, req: Request): Response {
+/** RFC 9728 – /.well-known/oauth-protected-resource[/path] */
+export function protectedResourceMetadata(config: OAuthConfig, req: Request, resourcePath = "/mcp"): Response {
   const root = baseUrl(config, req);
   return Response.json(
     {
-      resource: `${root}/mcp`,
+      resource: `${root}${resourcePath}`,
       authorization_servers: [root],
       bearer_methods_supported: ["header"],
       scopes_supported: ["mcp"],
@@ -119,7 +158,7 @@ export function authorizationServerMetadata(config: OAuthConfig, req: Request): 
       registration_endpoint: `${root}/oauth/register`,
       revocation_endpoint: `${root}/oauth/revoke`,
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
       scopes_supported: ["mcp"],
@@ -141,11 +180,22 @@ export async function registerClient(req: Request): Promise<Response> {
     /* malformed/empty body → treat as empty */
   }
 
-  const redirectUris = expandRedirectUris(
-    Array.isArray(body.redirect_uris)
-      ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string" && isRegistrableRedirectUri(u))
-      : [],
-  );
+  const requested = Array.isArray(body.redirect_uris)
+    ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string" && isRegistrableRedirectUri(u))
+    : [];
+
+  // Registration is public, so an unrestricted destination is an open invitation
+  // to phish an authorization code. Reject here rather than at authorize time,
+  // so a client that cannot work finds out immediately.
+  const rejected = requested.filter((uri) => !isAllowedRedirectTarget(uri));
+  if (rejected.length > 0) {
+    log("error", "oauth_register_redirect_host_not_allowed", {
+      hosts: rejected.map((uri) => redirectTargetLabel(uri)),
+    });
+    return oauthError("invalid_redirect_uris");
+  }
+
+  const redirectUris = expandRedirectUris(requested);
 
   if (redirectUris.length === 0) {
     return oauthError("invalid_redirect_uris");
@@ -245,6 +295,14 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     log("error", "oauth_authorize_invalid_redirect_uri", { clientId, redirectUri });
     return renderAuthorizeError("The redirect URI is not registered for this client.");
   }
+  // Re-checked here so a client persisted before the allowlist existed, or from
+  // a state file restored by hand, cannot bypass it.
+  if (!isAllowedRedirectTarget(redirectUri)) {
+    log("error", "oauth_authorize_redirect_host_not_allowed", { clientId, host: redirectTargetLabel(redirectUri) });
+    return renderAuthorizeError(
+      `Authorization codes may not be sent to ${redirectTargetLabel(redirectUri)}. Add it to MCP_ALLOWED_REDIRECT_HOSTS if this client is yours.`,
+    );
+  }
 
   // 2. PKCE: must be S256
   if (!codeChallenge || codeChallengeMethod !== "S256") {
@@ -284,8 +342,13 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     return renderAuthorizeError("Could not reach the identity provider. Please try again later.");
   }
 
-  log("info", "oauth_authorize_consent_shown", { clientId });
-  return renderAuthorizeConsent(authUrl, { clientName: client.clientName });
+  log("info", "oauth_authorize_consent_shown", { clientId, redirectHost: redirectTargetLabel(redirectUri) });
+  return renderAuthorizeConsent(authUrl, {
+    redirectUri,
+    clientName: client.clientName,
+    grants: config.grantSummary,
+    allowlisted: allowedRedirectHosts().length > 0,
+  });
 }
 
 // ─── GET /oauth/callback ──────────────────────────────────────────────────────
@@ -329,7 +392,24 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
   );
   if (!result.ok) {
     log("error", "oauth_pocketid_exchange_failed", { error: result.error });
+    if (result.error === "pocketid_id_token_missing") {
+      return renderAuthorizeError(
+        "The identity provider did not return an id_token, so the sign-in cannot be attributed to anyone. Make sure POCKETID_SCOPES includes openid.",
+      );
+    }
     return renderAuthorizeError("Sign-in with the identity provider failed. Please try again.");
+  }
+
+  const identity: Identity = {
+    subject: result.identity.subject,
+    ...(result.identity.email ? { email: result.identity.email } : {}),
+  };
+
+  // Checked before any credential is minted, so a rejected person never holds
+  // even a short-lived authorization code.
+  if (!isAllowedSubject(identity)) {
+    log("error", "oauth_subject_not_allowed", { actor: actorFor(identity) });
+    return renderAuthorizeError("This account is not allowed to access this server.");
   }
 
   // Issue our own authorization code bound to the original MCP client request
@@ -340,6 +420,7 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
     codeChallenge: pending.codeChallenge,
     scopes: pending.scopes.length ? pending.scopes : ["mcp"],
     resource: pending.resource,
+    identity,
     expiresAt: Date.now() + CODE_TTL_MS,
   });
   saveState();
@@ -348,12 +429,61 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
 
   log("info", "oauth_authorization_code_issued", {
     clientId: pending.clientId,
+    actor: actorFor(identity),
     redirectHost: new URL(redirectUrl).host,
   });
   return renderAuthorizeSuccess(redirectUrl);
 }
 
 // ─── POST /oauth/token ────────────────────────────────────────────────────────
+
+/**
+ * Mints an access token, plus the refresh token that will replace it, and
+ * returns the RFC 6749 token response. `familyId` ties the pair together so a
+ * later rotation — or a revocation — can reach every credential descended from
+ * one authorization.
+ */
+function issueTokens(params: {
+  clientId: string;
+  scopes: string[];
+  resource?: string;
+  identity?: Identity;
+  familyId: string;
+}): Response {
+  const { clientId, scopes, resource, identity, familyId } = params;
+  const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
+  const refreshToken = `vmhq_rt_${randomBytes(32).toString("base64url")}`;
+  const now = Date.now();
+
+  accessTokens.set(sha256(accessToken), {
+    clientId,
+    scopes,
+    resource,
+    identity,
+    familyId,
+    expiresAt: now + TOKEN_TTL_S * 1000,
+  });
+  refreshTokens.set(sha256(refreshToken), {
+    clientId,
+    scopes,
+    resource,
+    identity,
+    familyId,
+    expiresAt: now + REFRESH_TOKEN_TTL_S * 1000,
+  });
+  saveState();
+
+  return Response.json(
+    {
+      access_token: accessToken,
+      token_type: "Bearer",
+      expires_in: TOKEN_TTL_S,
+      refresh_token: refreshToken,
+      scope: scopes.join(" "),
+    },
+    { headers: OAUTH_CORS_HEADERS },
+  );
+}
 
 export async function exchangeToken(req: Request): Promise<Response> {
   let params: Record<string, string>;
@@ -363,18 +493,22 @@ export async function exchangeToken(req: Request): Promise<Response> {
     if (err instanceof RequestBodyTooLargeError) return oauthError("invalid_request", 413);
     throw err;
   }
+  const { grant_type: grantType = "" } = params;
+
+  if (grantType === "refresh_token") {
+    return exchangeRefreshToken(params);
+  }
+  if (grantType !== "authorization_code") {
+    return oauthError("unsupported_grant_type");
+  }
+
   const {
-    grant_type: grantType = "",
     code = "",
     redirect_uri: redirectUri = "",
     client_id: clientId = "",
     code_verifier: codeVerifier = "",
     resource = "",
   } = params;
-
-  if (grantType !== "authorization_code") {
-    return oauthError("unsupported_grant_type");
-  }
 
   const ac = codes.get(code);
   // Single-use: delete immediately (even on failure)
@@ -402,27 +536,78 @@ export async function exchangeToken(req: Request): Promise<Response> {
     return oauthError("invalid_target");
   }
 
-  const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
-  const expiresAt = Date.now() + TOKEN_TTL_S * 1000;
-  accessTokens.set(sha256(accessToken), {
+  log("info", "oauth_access_token_issued", {
+    clientId,
+    actor: actorFor(ac.identity),
+    expiresIn: TOKEN_TTL_S,
+  });
+
+  return issueTokens({
     clientId,
     scopes: ac.scopes,
     resource: ac.resource,
-    expiresAt,
+    identity: ac.identity,
+    familyId: randomBytes(12).toString("hex"),
   });
-  saveState();
+}
 
-  log("info", "oauth_access_token_issued", { clientId, expiresIn: TOKEN_TTL_S });
+/**
+ * Refresh grant with rotation (OAuth 2.1 §4.3.1 for public clients).
+ *
+ * The presented token is consumed and replaced. A token presented after it was
+ * already rotated away cannot be a mistake by a well-behaved client — either
+ * the client's copy or the server's was stolen — so the entire family is
+ * revoked rather than the request merely refused.
+ */
+function exchangeRefreshToken(params: Record<string, string>): Response {
+  const { refresh_token: presented = "", client_id: clientId = "" } = params;
+  if (!presented) return oauthError("invalid_request");
 
-  return Response.json(
-    {
-      access_token: accessToken,
-      token_type: "Bearer",
-      expires_in: TOKEN_TTL_S,
-      scope: ac.scopes.join(" "),
-    },
-    { headers: OAUTH_CORS_HEADERS },
-  );
+  const hash = sha256(presented);
+  const stored = refreshTokens.get(hash);
+
+  if (!stored) {
+    const consumed = consumedRefreshTokens.get(hash);
+    if (consumed) {
+      // A token that was already rotated away is being presented again. A
+      // correct client never does this, so treat it as a leak and take down
+      // everything descended from that authorization, not just this request.
+      const revoked = revokeFamily(consumed.familyId);
+      saveState();
+      log("error", "oauth_refresh_reuse_detected", {
+        clientId,
+        familyId: consumed.familyId,
+        revokedCredentials: revoked,
+      });
+    }
+    return oauthError("invalid_grant");
+  }
+
+  refreshTokens.delete(hash);
+  consumedRefreshTokens.set(hash, { familyId: stored.familyId, expiresAt: stored.expiresAt });
+
+  if (stored.expiresAt < Date.now()) {
+    saveState();
+    return oauthError("invalid_grant");
+  }
+  if (clientId && stored.clientId !== clientId) {
+    saveState();
+    return oauthError("invalid_grant");
+  }
+
+  log("info", "oauth_access_token_refreshed", {
+    clientId: stored.clientId,
+    actor: actorFor(stored.identity),
+    familyId: stored.familyId,
+  });
+
+  return issueTokens({
+    clientId: stored.clientId,
+    scopes: stored.scopes,
+    resource: stored.resource,
+    identity: stored.identity,
+    familyId: stored.familyId,
+  });
 }
 
 // ─── POST /oauth/revoke ───────────────────────────────────────────────────────
@@ -438,8 +623,24 @@ export async function revokeToken(req: Request): Promise<Response> {
   const token = params.token ?? "";
   if (!token) return oauthError("invalid_request");
 
-  const existed = accessTokens.delete(sha256(token));
-  if (existed) saveState();
+  // RFC 7009: the caller may present either token type, and the endpoint always
+  // answers 200. Revoking either one takes down the whole family, so a user who
+  // revokes "the token" they have does not leave its sibling alive.
+  const hash = sha256(token);
+  const familyId = accessTokens.get(hash)?.familyId ?? refreshTokens.get(hash)?.familyId;
+
+  let revoked = 0;
+  if (familyId) {
+    revoked = revokeFamily(familyId);
+  } else {
+    if (accessTokens.delete(hash)) revoked++;
+    if (refreshTokens.delete(hash)) revoked++;
+  }
+
+  if (revoked > 0) {
+    saveState();
+    log("info", "oauth_token_revoked", { revokedCredentials: revoked, ...(familyId ? { familyId } : {}) });
+  }
 
   return Response.json({}, { headers: OAUTH_CORS_HEADERS });
 }
@@ -477,10 +678,91 @@ export function verifyAccessToken(token: string): AuthInfo | undefined {
     scopes: stored.scopes,
     expiresAt: Math.floor(stored.expiresAt / 1000),
     ...(resourceUrl ? { resource: resourceUrl } : {}),
+    // Identity is absent on tokens issued before it was recorded; actorFor()
+    // renders those as "legacy" rather than dropping them.
+    extra: {
+      actor: actorFor(stored.identity),
+      ...(stored.identity ? { identity: stored.identity } : {}),
+      ...(stored.familyId ? { familyId: stored.familyId } : {}),
+    },
   };
 }
 
 /** Returns true if the token is a valid, non-expired OAuth access token. */
 export function isOAuthAccessToken(token: string): boolean {
   return verifyAccessToken(token) !== undefined;
+}
+
+// ─── Session inventory (for the admin-tier vmhq_sessions tool) ────────────────
+
+export type SessionSummary = {
+  clientId: string;
+  clientName?: string;
+  actor: string;
+  scopes: string[];
+  expiresAt: string;
+  /** Whether the session can renew itself past the access token's expiry. */
+  renewable: boolean;
+  familyId?: string;
+};
+
+/**
+ * Active sessions, one per access token. Deliberately returns no token value
+ * and no hash: this is an inventory for deciding what to revoke, and a listing
+ * that leaked credentials would be worse than no listing at all.
+ */
+export function listSessions(now = Date.now()): SessionSummary[] {
+  const renewableFamilies = new Set<string>();
+  for (const token of refreshTokens.values()) {
+    if (token.expiresAt > now) renewableFamilies.add(token.familyId);
+  }
+
+  const sessions: SessionSummary[] = [];
+  for (const token of accessTokens.values()) {
+    if (token.expiresAt <= now) continue;
+    sessions.push({
+      clientId: token.clientId,
+      ...(clients.get(token.clientId)?.clientName ? { clientName: clients.get(token.clientId)!.clientName } : {}),
+      actor: actorFor(token.identity),
+      scopes: token.scopes,
+      expiresAt: new Date(token.expiresAt).toISOString(),
+      renewable: token.familyId ? renewableFamilies.has(token.familyId) : false,
+      ...(token.familyId ? { familyId: token.familyId } : {}),
+    });
+  }
+
+  return sessions.sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+}
+
+/**
+ * Revokes sessions by person, by client, or all of them, removing the access
+ * and refresh tokens together so a cut session cannot renew itself. Returns how
+ * many credentials were dropped.
+ */
+export function revokeSessions(filter: { actor?: string; clientId?: string; all?: boolean }): number {
+  const actor = filter.actor?.trim().toLowerCase();
+  const matches = (token: { clientId: string; identity?: Identity }): boolean => {
+    if (filter.all) return true;
+    if (filter.clientId && token.clientId === filter.clientId) return true;
+    if (actor) {
+      const candidates = [token.identity?.subject, token.identity?.email, actorFor(token.identity)];
+      return candidates.some((value) => value?.toLowerCase() === actor);
+    }
+    return false;
+  };
+
+  let revoked = 0;
+  for (const [hash, token] of accessTokens) {
+    if (matches(token)) { accessTokens.delete(hash); revoked++; }
+  }
+  for (const [hash, token] of refreshTokens) {
+    if (matches(token)) { refreshTokens.delete(hash); revoked++; }
+  }
+
+  if (revoked > 0) {
+    saveState();
+    log("info", "oauth_sessions_revoked", { revokedCredentials: revoked, ...filter });
+  }
+
+  return revoked;
 }

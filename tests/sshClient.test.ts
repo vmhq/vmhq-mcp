@@ -4,6 +4,7 @@ import { Server, utils, type Connection } from "ssh2";
 import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
+  assertShellAllowed,
   assertVmidAllowed,
   backgroundScript,
   jobPaths,
@@ -16,6 +17,7 @@ import {
   isSshFailure,
   lxcCommand,
   nodeCommand,
+  isAllowedShell,
   parsePctList,
   runSshCommand,
   shellQuote,
@@ -242,25 +244,117 @@ describe("command construction", () => {
   test("lxcCommand keeps an injected quote inside the pct exec argument", () => {
     const config = configFor(22);
     expect(lxcCommand(config, 101, "systemctl restart nginx")).toBe(
-      "pct exec 101 -- /bin/sh -c 'systemctl restart nginx'",
+      "pct exec 101 -- '/bin/sh' -c 'systemctl restart nginx'",
     );
-    expect(lxcCommand(config, 101, "'; reboot #")).toBe("pct exec 101 -- /bin/sh -c ''\\''; reboot #'");
+    expect(lxcCommand(config, 101, "'; reboot #")).toBe("pct exec 101 -- '/bin/sh' -c ''\\''; reboot #'");
   });
 
   test("lxcCommand honours a per-call shell override", () => {
     expect(lxcCommand(configFor(22), 101, "echo ${BASH_VERSION}", "/bin/bash")).toBe(
-      "pct exec 101 -- /bin/bash -c 'echo ${BASH_VERSION}'",
+      "pct exec 101 -- '/bin/bash' -c 'echo ${BASH_VERSION}'",
     );
   });
 
   test("nodeCommand wraps the whole pipeline in sudo when enabled", () => {
     const config = configFor(22, { sudo: true });
     expect(nodeCommand(config, "pct list | grep running")).toBe("sudo -n /bin/sh -c 'pct list | grep running'");
-    expect(lxcCommand(config, 101, "uptime")).toBe("sudo -n /bin/sh -c 'pct exec 101 -- /bin/sh -c '\\''uptime'\\'''");
+    expect(lxcCommand(config, 101, "uptime")).toBe("sudo -n /bin/sh -c 'pct exec 101 -- '\\''/bin/sh'\\'' -c '\\''uptime'\\'''");
   });
 
   test("nodeCommand passes the command through untouched without sudo", () => {
     expect(nodeCommand(configFor(22), "pct list | grep running")).toBe("pct list | grep running");
+  });
+});
+
+/**
+ * The `shell` argument is the one part of `pct exec` that is not the quoted
+ * command, so an unvalidated value used to be spliced straight into the
+ * node-level command: it escaped the container and, with it, the
+ * PROXMOX_SSH_ALLOWED_VMIDS allowlist.
+ */
+describe("shell validation", () => {
+  const INJECTIONS = [
+    "/bin/sh -c 'id > /tmp/pwned' #",
+    "/bin/sh; touch /tmp/pwned;",
+    "/bin/sh$(id)",
+    "/bin/sh`id`",
+    "/bin/sh | id",
+    "/bin/sh\nid",
+    "sh",
+    "../../bin/sh",
+    "/bin/sh ",
+    "",
+  ];
+
+  test("accepts plain absolute interpreter paths", () => {
+    for (const shell of ["/bin/sh", "/bin/bash", "/usr/bin/zsh", "/usr/local/bin/fish"]) {
+      expect(isAllowedShell(shell)).toBe(true);
+      expect(assertShellAllowed(shell)).toBeUndefined();
+    }
+  });
+
+  test("rejects every shape that could break out of the pct exec argument", () => {
+    for (const shell of INJECTIONS) {
+      expect(isAllowedShell(shell)).toBe(false);
+      expect(assertShellAllowed(shell)).toContain("absolute path");
+    }
+  });
+
+  test("treats an omitted shell as the configured default", () => {
+    expect(assertShellAllowed(undefined)).toBeUndefined();
+  });
+
+  test("lxcCommand refuses to build a command with an injected shell", () => {
+    const config = configFor(22, { allowedVmids: [101] });
+    for (const shell of INJECTIONS.filter(Boolean)) {
+      expect(() => lxcCommand(config, 101, "echo harmless", shell)).toThrow("unsafe shell");
+    }
+  });
+
+  test("backgroundScript refuses to build a launcher with an injected runner", () => {
+    expect(() => backgroundScript(configFor(22), "echo hi", "abc123abc123", "/bin/sh; touch /tmp/pwned;")).toThrow(
+      "unsafe shell",
+    );
+  });
+
+  test("a config with an unsafe containerShell cannot build commands either", () => {
+    const config = configFor(22, { containerShell: "/bin/sh -c 'id' #" });
+    expect(() => lxcCommand(config, 101, "echo hi")).toThrow("unsafe shell");
+  });
+
+  /**
+   * End-to-end proof under a real shell: `pct` is stubbed so the built command
+   * actually runs. A valid override must reach it as one argv entry, and the
+   * payload from the old injection must never execute.
+   */
+  test("passes the shell to pct as a single argument under a real shell", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/vmhq-shell-`);
+    try {
+      writeFileSync(`${dir}/pct`, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+      const marker = `${dir}/pwned`;
+
+      async function sh(script: string): Promise<string> {
+        const proc = Bun.spawn(["/bin/sh", "-c", script], {
+          stdout: "pipe",
+          stderr: "ignore",
+          env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+        });
+        const output = await new Response(proc.stdout).text();
+        await proc.exited;
+        return output;
+      }
+
+      const argv = (await sh(lxcCommand(configFor(22), 101, "echo hi", "/bin/bash"))).split("\n");
+      expect(argv).toContain("/bin/bash");
+      expect(argv).toContain("echo hi");
+
+      // The historical payload is now rejected before a command is ever built,
+      // so nothing reaches the node.
+      expect(() => lxcCommand(configFor(22), 101, "echo hi", `/bin/sh -c 'touch ${marker}' #`)).toThrow();
+      expect(readdirSync(dir)).not.toContain("pwned");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -341,8 +435,8 @@ describe("background jobs", () => {
   test("uses the requested shell inside the container", () => {
     const script = backgroundScript(configFor(22), "echo hi", "abc123abc123", "/bin/bash");
 
-    expect(script).toContain("setsid /bin/bash -c ");
-    expect(script).toContain("nohup /bin/bash -c ");
+    expect(script).toContain("setsid '/bin/bash' -c ");
+    expect(script).toContain("nohup '/bin/bash' -c ");
   });
 
   test("parses a finished job and splits the log from the header", () => {
