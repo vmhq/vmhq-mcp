@@ -334,9 +334,9 @@ describe("GET /oauth/authorize", () => {
     );
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Continue to PocketID");
-    // The destination is what the user has to judge, so it must be on the page.
-    expect(html).toContain("client.example.com");
+    expect(html).toContain("Sign in with PocketID");
+    // The page is unauthenticated, so it must not disclose the destination.
+    expect(html).not.toContain("client.example.com");
     const location = new URL(pocketIdUrlFromConsentPage(html));
     expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
     expect(location.searchParams.get("client_id")).toBe("mcp-client");
@@ -963,7 +963,7 @@ describe("redirect destination control", () => {
     expect(await res.text()).toContain("evil.example.com");
   });
 
-  test("the consent page leads with the destination, not the self-reported name", async () => {
+  test("the consent page shows the client name and nothing else about the request", async () => {
     delete process.env[ALLOWLIST];
     const redirectUri = "https://evil.example.com/cb";
     const res = await oauth.registerClient(
@@ -987,29 +987,11 @@ describe("redirect destination control", () => {
     );
     const html = await page.text();
 
-    expect(html).toContain("evil.example.com");
-    expect(html).toContain("has not been verified");
-    expect(html).toContain("A root shell on pve.lan");
-    // With no allowlist enforced, the page has to say so.
-    expect(html).toContain("No destination allowlist is configured");
-  });
-
-  test("the allowlist warning disappears once one is enforced", async () => {
-    process.env[ALLOWLIST] = "claude.ai";
-    const redirectUri = "https://claude.ai/api/mcp/auth_callback";
-    const clientId = await register(redirectUri);
-    const page = await oauth.beginAuthorize(
-      authorizeRequest({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        code_challenge: s256("v"),
-        code_challenge_method: "S256",
-        state: "client-state",
-      }),
-      testConfig,
-    );
-    const html = await page.text();
-    expect(html).toContain("claude.ai");
+    expect(html).toContain("Claude");
+    // Nothing about the destination, what a token reaches, or how the server
+    // is configured may leak to an unauthenticated visitor.
+    expect(html).not.toContain("evil.example.com");
+    expect(html).not.toContain("A root shell on pve.lan");
     expect(html).not.toContain("No destination allowlist is configured");
   });
 
