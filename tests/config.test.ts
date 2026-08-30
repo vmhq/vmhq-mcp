@@ -115,3 +115,44 @@ describe("loadProxmoxSshConfig", () => {
     expect(loadProxmoxSshConfig()?.hostFingerprint).toBe("SHA256:abc");
   });
 });
+
+/**
+ * The client secret and the id_token both travel over the issuer connection,
+ * so a public issuer reached over cleartext hands them to the network.
+ */
+describe("POCKETID_ISSUER transport", () => {
+  const VARS = ["POCKETID_ISSUER", "POCKETID_CLIENT_ID", "POCKETID_CLIENT_SECRET"] as const;
+
+  afterEach(() => {
+    for (const name of VARS) delete process.env[name];
+  });
+
+  function withIssuer(issuer: string): void {
+    process.env.MCP_ACCESS_TOKEN = "x".repeat(48);
+    process.env.POCKETID_ISSUER = issuer;
+    process.env.POCKETID_CLIENT_ID = "mcp";
+    process.env.POCKETID_CLIENT_SECRET = "secret";
+  }
+
+  test("refuses a public issuer over http", () => {
+    withIssuer("http://id.example.com");
+    expect(() => loadConfig()).toThrow("POCKETID_ISSUER must use https");
+  });
+
+  test("allows http for a private host, matching the TLS carve-out", () => {
+    for (const issuer of ["http://192.168.1.50:9000", "http://id.local", "http://localhost:8080"]) {
+      withIssuer(issuer);
+      expect(() => loadConfig()).not.toThrow();
+    }
+  });
+
+  test("accepts https", () => {
+    withIssuer("https://id.example.com");
+    expect(() => loadConfig()).not.toThrow();
+  });
+
+  test("rejects an issuer that is not a URL at all", () => {
+    withIssuer("not-a-url");
+    expect(() => loadConfig()).toThrow("not a valid URL");
+  });
+});

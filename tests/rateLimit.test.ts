@@ -89,3 +89,35 @@ describe("checkRateLimit", () => {
     expect(checkRateLimit(req({ "x-forwarded-for": ipB }), "oauth_register", { trustProxy: false })).toBe(false);
   });
 });
+
+/**
+ * Probing tokens used to spend the ordinary /mcp allowance (120/min). A failed
+ * attempt now burns a much narrower budget, and a client that authenticates
+ * never touches it.
+ */
+describe("authentication failure bucket", () => {
+  function req(ip: string): Request {
+    return new Request("https://mcp.example.com/mcp", { headers: { "x-real-ip": ip } });
+  }
+
+  test("is far tighter than the general mcp bucket", () => {
+    const ip = "203.0.113.90";
+    let allowed = 0;
+    for (let i = 0; i < 25; i++) {
+      if (checkRateLimit(req(ip), "mcp_auth_failure", { trustProxy: true })) allowed++;
+    }
+    expect(allowed).toBe(10);
+  });
+
+  test("spending it does not spend the general mcp allowance", () => {
+    const ip = "203.0.113.91";
+    for (let i = 0; i < 25; i++) checkRateLimit(req(ip), "mcp_auth_failure", { trustProxy: true });
+    // A client that authenticates correctly is unaffected by another's probing.
+    expect(checkRateLimit(req(ip), "mcp", { trustProxy: true })).toBe(true);
+  });
+
+  test("is keyed per IP, so one prober cannot lock out everyone", () => {
+    for (let i = 0; i < 25; i++) checkRateLimit(req("203.0.113.92"), "mcp_auth_failure", { trustProxy: true });
+    expect(checkRateLimit(req("203.0.113.93"), "mcp_auth_failure", { trustProxy: true })).toBe(true);
+  });
+});

@@ -523,6 +523,12 @@ export async function exchangeToken(req: Request): Promise<Response> {
   if (ac.clientId !== clientId) {
     return oauthError("invalid_grant");
   }
+  // A client pruned between authorizing and redeeming no longer exists as far
+  // as this server is concerned, so its code should not still buy a token.
+  if (!clients.has(clientId)) {
+    log("error", "oauth_token_client_unknown", { clientId });
+    return oauthError("invalid_grant");
+  }
   // RFC 8252 §7.3: match redirect URI port-agnostic for loopback
   if (!redirectUriMatches(redirectUri, ac.redirectUri)) {
     return oauthError("invalid_grant");
@@ -648,10 +654,32 @@ export async function revokeToken(req: Request): Promise<Response> {
 // ─── Token verification ───────────────────────────────────────────────────────
 
 /**
+ * RFC 8707 §2: a token bound to a resource is only valid at that resource.
+ * Compared on origin + path with the fragment and any trailing slash ignored,
+ * so `https://host/mcp` and `https://host/mcp/` are the same audience.
+ */
+function resourceMatches(tokenResource: string, expected: string): boolean {
+  try {
+    const a = new URL(tokenResource);
+    const b = new URL(expected);
+    const path = (url: URL) => url.pathname.replace(/\/+$/u, "");
+    return a.origin === b.origin && path(a) === path(b);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Verifies an OAuth access token and returns structured AuthInfo.
  * Returns undefined if the token is invalid or expired.
+ *
+ * `expectedResources` are the resource identifiers this server answers for. A
+ * token carrying a `resource` must name one of them: without the check, a token
+ * this server issued for a different audience would still open /mcp. Tokens
+ * with no `resource` — everything issued before RFC 8707 was honoured, and any
+ * client that does not send the parameter — are unaffected.
  */
-export function verifyAccessToken(token: string): AuthInfo | undefined {
+export function verifyAccessToken(token: string, expectedResources?: string[]): AuthInfo | undefined {
   if (!token) return undefined;
   const hash = sha256(token);
   const stored = accessTokens.get(hash);
@@ -670,6 +698,17 @@ export function verifyAccessToken(token: string): AuthInfo | undefined {
       resourceUrl = new URL(stored.resource);
     } catch {
       resourceUrl = undefined;
+    }
+  }
+
+  if (stored.resource && expectedResources && expectedResources.length > 0) {
+    if (!expectedResources.some((expected) => resourceMatches(stored.resource!, expected))) {
+      log("error", "oauth_token_resource_mismatch", {
+        clientId: stored.clientId,
+        actor: actorFor(stored.identity),
+        tokenResource: stored.resource,
+      });
+      return undefined;
     }
   }
   return {

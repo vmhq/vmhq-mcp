@@ -26,6 +26,9 @@ import {
 } from "../src/sshClient.js";
 
 process.env.MCP_LOG_LEVEL = "silent";
+// Keep host-key pinning out of the project's own data/ directory: without this
+// every run of the suite leaves a proxmox-known-hosts.json behind in the repo.
+process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH = `${tmpdir()}/vmhq-test-known-hosts-${process.pid}.json`;
 
 const hostKeyPem = generateKeyPairSync("rsa", {
   modulusLength: 2048,
@@ -42,7 +45,7 @@ type ExecHandler = (context: { command: string; stdin: string; write: (text: str
 type TestServer = { port: number; close: () => void };
 
 /** Boots an in-process SSH server so exec behaviour is exercised end to end. */
-async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean; port?: number } = {}): Promise<TestServer> {
+async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean; port?: number; onSignal?: (name: string) => void } = {}): Promise<TestServer> {
   const server = new Server({ hostKeys: [hostKeyPem] }, (client: Connection) => {
     // The host-key tests make the client disconnect mid-handshake, which the
     // server reports as KEY_EXCHANGE_FAILED. Without a listener ssh2 rethrows
@@ -53,6 +56,10 @@ async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean
     client.on("ready", () => {
       client.on("session", (accept) => {
         const session = accept();
+        session.on("signal", (acceptSignal, _rejectSignal, info) => {
+          options.onSignal?.(info.name);
+          acceptSignal?.();
+        });
         session.on("exec", (acceptExec, _reject, info) => {
           const stream = acceptExec();
           let stdin = "";
@@ -706,5 +713,30 @@ describe("host key trust on first use", () => {
 
     if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
     expect(result.stdout).toBe("ok");
+  });
+});
+
+describe("timeout", () => {
+  test("reports a timeout, and the command is left running on the target", async () => {
+    // Deliberately documents the limit rather than papering over it: ssh2 only
+    // sends a signal request while the channel is writable, and stdin is closed
+    // at exec time, so nothing can reach the remote process from here. Long
+    // work belongs in background: true.
+    const signals: string[] = [];
+    const server = await startServer({
+      onExec: () => {
+        /* never finishes: the client must time out */
+      },
+      onSignal: (name) => signals.push(name),
+    });
+
+    const result = await runSshCommand(configFor(server.port, { timeoutMs: 700 }), "sleep 60");
+    await Bun.sleep(150);
+    server.close();
+
+    if (!isSshFailure(result)) throw new Error("expected a timeout failure");
+    expect(result.error.type).toBe("ssh_timeout");
+    expect(result.error.retryable).toBe(true);
+    expect(signals).toEqual([]);
   });
 });

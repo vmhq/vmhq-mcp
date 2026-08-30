@@ -1235,3 +1235,73 @@ describe("revocation", () => {
     expect(oauth.verifyAccessToken(tokens.access_token)).toBeDefined();
   });
 });
+
+/**
+ * A token bound to a resource is only valid at that resource (RFC 8707 §2).
+ * Without the check, a token this server issued for one audience still opened
+ * /mcp, which is the whole point of binding it in the first place.
+ */
+describe("token audience", () => {
+  const OURS = ["https://mcp.example.com/mcp", "https://mcp.example.com/mcp/read"];
+
+  async function tokenBoundTo(resource?: string): Promise<string> {
+    const { tokenRes } = await fullFlow({
+      redirectUri: "https://audience.example.com/cb",
+      ...(resource ? { resource } : {}),
+    });
+    expect(tokenRes.status).toBe(200);
+    return ((await tokenRes.json()) as { access_token: string }).access_token;
+  }
+
+  test("a token bound to another server is refused", async () => {
+    const token = await tokenBoundTo("https://someone-else.example.com/mcp");
+    expect(oauth.verifyAccessToken(token, OURS)).toBeUndefined();
+  });
+
+  test("a token bound to this server is accepted at either endpoint", async () => {
+    const token = await tokenBoundTo("https://mcp.example.com/mcp");
+    expect(oauth.verifyAccessToken(token, OURS)).toBeDefined();
+    // Both paths are the same server; the tool tier is decided by the route.
+    expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp/read"])).toBeUndefined();
+  });
+
+  test("a trailing slash is not an audience mismatch", async () => {
+    const token = await tokenBoundTo("https://mcp.example.com/mcp");
+    expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp/"])).toBeDefined();
+  });
+
+  test("a token with no resource is unaffected, which covers everything already issued", async () => {
+    const token = await tokenBoundTo();
+    expect(oauth.verifyAccessToken(token, OURS)).toBeDefined();
+  });
+
+  test("no expected resources configured means no audience check", async () => {
+    // MCP_PUBLIC_URL unset: the server cannot name itself, so it cannot judge.
+    const token = await tokenBoundTo("https://someone-else.example.com/mcp");
+    expect(oauth.verifyAccessToken(token, [])).toBeDefined();
+    expect(oauth.verifyAccessToken(token)).toBeDefined();
+  });
+});
+
+describe("client must still be registered at redemption", () => {
+  test("a code from a pruned client no longer buys a token", async () => {
+    const redirectUri = "https://pruned.example.com/cb";
+    const clientId = await register(redirectUri);
+    const verifier = "correct-horse-battery-staple";
+    const { code } = await authorizeViaPocketId({ clientId, redirectUri, codeChallenge: s256(verifier) });
+
+    // The client ages out between authorizing and redeeming.
+    const { clients } = await import("../src/oauth/state.js");
+    clients.delete(clientId);
+
+    const res = await postToken({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_grant" });
+  });
+});

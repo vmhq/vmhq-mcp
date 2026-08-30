@@ -57,6 +57,11 @@ const defaultConfigs: Record<string, RateLimitConfig> = {
   oauth_token: { maxRequests: 60, windowMs: 60_000 },
   oauth_revoke: { maxRequests: 20, windowMs: 60_000 },
   mcp: { maxRequests: 120, windowMs: 60_000 },
+  // Only consumed when authentication fails, so a legitimate client never
+  // touches it. Not persisted across restarts: that would mean writing to disk
+  // on the hot path to close a window that only opens on a deploy, against a
+  // token long enough that brute force was never the threat.
+  mcp_auth_failure: { maxRequests: 10, windowMs: 60_000 },
 };
 
 /** Shared bucket for requests with no IP at all (no socket IP available; acts as a global fallback cap). */

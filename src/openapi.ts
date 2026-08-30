@@ -128,6 +128,26 @@ export function generateOpenApiSpec(services: ServiceDefinition[], publicUrl?: s
   };
 }
 
+/**
+ * CSP for the Swagger UI page. `unsafe-inline` is unavoidable here: the page
+ * bootstraps through an inline `window.onload` and Swagger injects its own
+ * styles. The unpkg entries match the pinned, SRI-checked bundle below.
+ *
+ * Worth knowing: /docs requires an Authorization header, so a browser cannot
+ * reach it by ordinary navigation. This is a belt for a client that does inject
+ * the header, not a protection exercised by everyday traffic.
+ */
+export const SWAGGER_UI_CSP =
+  "default-src 'none'; " +
+  "script-src 'self' https://unpkg.com 'unsafe-inline'; " +
+  "style-src 'self' https://unpkg.com 'unsafe-inline'; " +
+  "img-src 'self' data:; " +
+  "font-src 'self' data:; " +
+  "connect-src 'self'; " +
+  "base-uri 'none'; " +
+  "form-action 'none'; " +
+  "frame-ancestors 'none'";
+
 export function renderSwaggerUI(openapiUrl: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
