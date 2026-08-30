@@ -176,6 +176,11 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # (cursor://) are always allowed. Strongly recommended.
 # MCP_ALLOWED_REDIRECT_HOSTS=claude.ai
 
+# Host header values accepted on /mcp. When set, DNS-rebinding protection is
+# enabled on the MCP transport. Leave unset unless you know the Host your proxy
+# forwards, since a mismatch makes /mcp reject every request.
+# MCP_ALLOWED_HOSTS=mcp.example.com
+
 # Comma-separated OIDC subjects or emails allowed to sign in. Unset means
 # PocketID's own per-client group restriction is the only gate.
 # MCP_ALLOWED_SUBJECTS=vicente@example.com
@@ -382,6 +387,8 @@ accept the same tokens; the separation is per session, not per credential.
 - Set `PROXMOX_SSH_ALLOWED_VMIDS` when the agent only maintains some containers.
 - Pin the node's host key with `PROXMOX_SSH_HOST_FINGERPRINT`. It is required when the node is not on a private network, and the server refuses to start without it there. On a private network the first connection pins whatever key answers and records it in `PROXMOX_SSH_KNOWN_HOSTS_PATH` (default `./data/proxmox-known-hosts.json`); a later key change is then refused. If the node's key changed for a reason you know about, delete its entry from that file.
 - Every command is logged as a structured `ssh_exec_started` / `ssh_exec_finished` event naming the person who ran it, so `MCP_LOG_LEVEL=info` gives you an audit trail. Commands are truncated and common secret shapes (`password=`, `-p<value>`, `Authorization:`, `Bearer …`) are redacted first. That is a reduction in exposure, not a guarantee — pass secrets on **stdin**, which is never logged, rather than on the command line.
+
+A foreground command that hits its timeout is disconnected but **keeps running on the target**: stdin is closed as soon as the command starts, and ssh2 will only send a signal request while the channel is still writable, so nothing can reach the remote process afterwards. Use `background: true` for anything that might run long — `proxmox_job_status` tracks those properly because the job records its pid.
 
 Each command opens its own SSH connection; nothing is kept between requests, matching the stateless design of the rest of the server.
 

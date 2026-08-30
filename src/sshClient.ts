@@ -310,6 +310,13 @@ export async function runSshCommand(
     let expectedFingerprint = "";
     let settled = false;
 
+    // On timeout the connection is dropped, but the command keeps running on
+    // the target. Signalling it is not an option here: ssh2 only sends a signal
+    // request while the channel is still writable (lib/Channel.js), and stdin is
+    // closed as soon as the command starts so anything reading from it cannot
+    // hang. Verified against a real SSH server — the request never leaves.
+    // A command that may outlive its timeout belongs in background: true, where
+    // proxmox_job_status owns its lifecycle because the job records its pid.
     const timer = setTimeout(() => {
       settle(sshError("ssh_timeout", `SSH command exceeded ${timeoutMs}ms and was aborted.`, true));
     }, timeoutMs);

@@ -59,6 +59,11 @@ export type AppConfig = {
   proxmoxSsh?: ProxmoxSshConfig;
   /** Plain-language capabilities of an issued token, shown on the consent page. */
   grantSummary: string[];
+  /**
+   * Host header values accepted on /mcp. When set, the MCP transport enables
+   * DNS-rebinding protection. Empty means the protection stays off.
+   */
+  allowedHosts: string[];
 };
 
 /**
@@ -155,6 +160,22 @@ function loadPocketIdConfig(): PocketIdConfig | undefined {
   const clientSecret = readEnv("POCKETID_CLIENT_SECRET");
   if (!issuer || !clientId || !clientSecret) return undefined;
 
+  // The client secret and the id_token both cross this connection, so a public
+  // issuer over cleartext would hand them to the network. Private hosts are
+  // exempt, the same carve-out isPrivateHost() already makes for
+  // PROXMOX_INSECURE_TLS.
+  let issuerUrl: URL;
+  try {
+    issuerUrl = new URL(issuer);
+  } catch {
+    throw new Error(`POCKETID_ISSUER is not a valid URL: ${issuer}`);
+  }
+  if (issuerUrl.protocol !== "https:" && !isPrivateHost(issuerUrl.hostname)) {
+    throw new Error(
+      `POCKETID_ISSUER must use https for the public host ${issuerUrl.hostname}; the client secret and id_token travel over it.`,
+    );
+  }
+
   const scopes = readEnv("POCKETID_SCOPES", "openid profile email")
     .split(/\s+/)
     .filter(Boolean);
@@ -200,6 +221,15 @@ export function loadConfig(): AppConfig {
     log("info", "oauth_subject_allowlist_configured", { count: allowedSubjects.length });
   }
 
+  // Opt-in on purpose: deriving the allowed host from MCP_PUBLIC_URL would make
+  // /mcp start rejecting requests whenever a reverse proxy forwards a different
+  // Host header, which trades a working server for a layer the bearer token
+  // already covers. Same reasoning as MCP_ALLOWED_REDIRECT_HOSTS.
+  const allowedHosts = readEnv("MCP_ALLOWED_HOSTS")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
   const publicUrl = readEnv("MCP_PUBLIC_URL") || undefined;
   const defaultIconUrl = publicUrl
     ? `${publicUrl.replace(/\/$/, "")}/icon.svg`
@@ -217,5 +247,6 @@ export function loadConfig(): AppConfig {
     pocketId: loadPocketIdConfig(),
     proxmoxSsh,
     grantSummary: describeGrants(services, proxmoxSsh),
+    allowedHosts,
   };
 }

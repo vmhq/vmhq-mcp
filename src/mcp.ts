@@ -456,7 +456,7 @@ function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefi
 
 const sshExecFields = {
   stdin: z.string().optional().describe("Optional text piped to the command's stdin. Useful for writing files, e.g. command \"tee /etc/motd\" with the file contents as stdin."),
-  timeoutMs: z.number().optional().describe("Optional override for this command's timeout in milliseconds. For anything that may run for minutes prefer background: true, because the MCP client gives up long before a raised timeout does."),
+  timeoutMs: z.number().optional().describe("Optional override for this command's timeout in milliseconds. For anything that may run for minutes prefer background: true: the MCP client gives up long before a raised timeout does, and a foreground command that hits its timeout may keep running on the target — the server asks it to stop but cannot guarantee it, whereas a background job's lifecycle is tracked by proxmox_job_status."),
   background: z.boolean().optional().describe("Run the command detached and return immediately with a jobId. Use it for long maintenance runs (apt upgrade, rsync, builds): the command keeps running on the target even after this call returns, writing stdout and stderr to a log file, and proxmox_job_status reports its progress and final exit code."),
   maxLength: z.number().optional().describe("Optional maximum length in characters for stdout and stderr. Longer output is truncated and the dropped character count is reported."),
 };

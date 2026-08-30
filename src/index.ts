@@ -3,7 +3,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { createMcpServer, type ToolTier } from "./mcp.js";
 import { loadConfig } from "./config.js";
 import { log } from "./logger.js";
-import { generateOpenApiSpec, renderSwaggerUI } from "./openapi.js";
+import { generateOpenApiSpec, renderSwaggerUI, SWAGGER_UI_CSP } from "./openapi.js";
 import {
   authorizationServerMetadata,
   beginAuthorize,
@@ -88,7 +88,16 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
     tier,
     sessions: { list: listSessions, revoke: revokeSessions },
   });
-  const transport = new WebStandardStreamableHTTPServerTransport();
+  // Off unless MCP_ALLOWED_HOSTS is set: see the note in loadConfig().
+  const transport = new WebStandardStreamableHTTPServerTransport(
+    config.allowedHosts.length > 0
+      ? {
+          enableDnsRebindingProtection: true,
+          allowedHosts: config.allowedHosts,
+          ...(config.publicUrl ? { allowedOrigins: [new URL(config.publicUrl).origin] } : {}),
+        }
+      : {},
+  );
 
   await server.connect(transport);
 
@@ -121,6 +130,18 @@ const MCP_ENDPOINTS: Record<string, ToolTier> = {
 };
 
 const AUTHENTICATED_PATHS = new Set([...Object.keys(MCP_ENDPOINTS), "/openapi.json", "/docs"]);
+
+/**
+ * Resource identifiers this server answers for, matching what
+ * protectedResourceMetadata() advertises. Both endpoints are the same server —
+ * the tool tier is decided by the path, not by the token — so a token bound to
+ * either is accepted on either.
+ */
+function expectedResources(): string[] {
+  const root = config.publicUrl?.replace(/\/$/, "");
+  if (!root) return [];
+  return Object.keys(MCP_ENDPOINTS).map((path) => `${root}${path}`);
+}
 
 const httpServer = Bun.serve({
   port: config.port,
@@ -236,7 +257,11 @@ const httpServer = Bun.serve({
         headers: {
           "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version",
           "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-          "Access-Control-Allow-Origin": config.corsOrigin ?? "*",
+          // No wildcard fallback: an unset MCP_CORS_ORIGIN means no browser
+          // origin was ever intended, and non-browser MCP clients send no
+          // Origin at all. The OAuth endpoints keep their `*`, which discovery
+          // genuinely needs.
+          ...(config.corsOrigin ? { "Access-Control-Allow-Origin": config.corsOrigin } : {}),
         },
       }));
     }
@@ -247,10 +272,17 @@ const httpServer = Bun.serve({
 
     const token = bearerToken(req);
     const isStaticToken = constantTimeEqual(token, config.accessToken);
-    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token);
+    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token, expectedResources());
 
     if (!isStaticToken && !oauthInfo) {
-      return unauthorized(oauthConfig, req, url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp");
+      // A failed attempt burns a much narrower budget than a successful call,
+      // so probing tokens cannot hide inside the ordinary /mcp allowance.
+      if (!checkRateLimit(req, "mcp_auth_failure", ipOpts)) {
+        return secureResponse(rateLimited(req, "mcp_auth_failure", ipOpts));
+      }
+      return secureResponse(
+        unauthorized(oauthConfig, req, url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp"),
+      );
     }
 
     if (url.pathname === "/openapi.json") {
@@ -265,7 +297,10 @@ const httpServer = Bun.serve({
         : `${url.origin}/openapi.json`;
       return secureResponse(
         new Response(renderSwaggerUI(openapiUrl), {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": SWAGGER_UI_CSP,
+          },
         }),
       );
     }
