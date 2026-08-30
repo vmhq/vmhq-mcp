@@ -157,6 +157,9 @@ PROXMOX_TOKEN_SECRET=
 # Where background jobs (background: true) keep their log, pid and status files,
 # on the node or inside the container. Default: /var/log/vmhq-mcp
 # PROXMOX_SSH_JOB_DIR=/var/log/vmhq-mcp
+
+# Where the node's SSH host key is pinned on first use (private nodes).
+# PROXMOX_SSH_KNOWN_HOSTS_PATH=./data/proxmox-known-hosts.json
 # Days a job's files are kept. Each launch prunes older ones. 0 disables it.
 # PROXMOX_SSH_JOB_RETENTION_DAYS=30
 
@@ -374,10 +377,11 @@ accept the same tokens; the separation is per session, not per credential.
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 
 - Give the MCP its own SSH key, used by nothing else, and mount it read-only (`PROXMOX_SSH_KEY_PATH`).
-- To narrow access below root, create a dedicated node user, grant it exactly the commands you want in `sudoers`, and set `PROXMOX_SSH_SUDO=true`.
+- `PROXMOX_SSH_SUDO=true` lets a non-root SSH user run these tools as root. It does **not** restrict *what* they run: every command goes through `sudo -n /bin/sh -c '<command>'`, so the only sudoers rule that makes the feature work is `NOPASSWD: /bin/sh`, which is root without a seatbelt. A per-binary sudoers rule cannot narrow these tools — they exist to run arbitrary shell.
+- To genuinely narrow access, restrict the credential rather than the tool: give the node a dedicated user that only owns what the agent should touch, or force a wrapper of your own with `command="…"` in `authorized_keys`. `PROXMOX_SSH_ALLOWED_VMIDS` remains the one built-in limit, and it applies to containers.
 - Set `PROXMOX_SSH_ALLOWED_VMIDS` when the agent only maintains some containers.
-- Pin the node's host key with `PROXMOX_SSH_HOST_FINGERPRINT`. It is required when the node is not on a private network, and the server refuses to start without it there.
-- Every command is logged as a structured `ssh_exec_started` / `ssh_exec_finished` event, so `MCP_LOG_LEVEL=info` gives you an audit trail.
+- Pin the node's host key with `PROXMOX_SSH_HOST_FINGERPRINT`. It is required when the node is not on a private network, and the server refuses to start without it there. On a private network the first connection pins whatever key answers and records it in `PROXMOX_SSH_KNOWN_HOSTS_PATH` (default `./data/proxmox-known-hosts.json`); a later key change is then refused. If the node's key changed for a reason you know about, delete its entry from that file.
+- Every command is logged as a structured `ssh_exec_started` / `ssh_exec_finished` event naming the person who ran it, so `MCP_LOG_LEVEL=info` gives you an audit trail. Commands are truncated and common secret shapes (`password=`, `-p<value>`, `Authorization:`, `Bearer …`) are redacted first. That is a reduction in exposure, not a guarantee — pass secrets on **stdin**, which is never logged, rather than on the command line.
 
 Each command opens its own SSH connection; nothing is kept between requests, matching the stateless design of the rest of the server.
 

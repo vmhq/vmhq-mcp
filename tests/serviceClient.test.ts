@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildUrl, callService, filterFields, interpolatePath, isMultipartBody, parseFields } from "../src/serviceClient.js";
 import type { ServiceDefinition } from "../src/services.js";
 
@@ -18,6 +18,7 @@ afterEach(() => {
   for (const server of servers.splice(0)) {
     server.stop();
   }
+  delete process.env.TEST_MINIFLUX_TOKEN;
 });
 
 describe("interpolatePath", () => {
@@ -396,5 +397,116 @@ describe("callService upstream size cap", () => {
     };
     expect(result.error).toBeDefined();
     expect(result.error?.message).toContain("exceeded");
+  });
+});
+
+/**
+ * fetch follows redirects by default, and Bun (like the spec) only strips
+ * `Authorization` when the origin changes — a header-named credential such as
+ * Miniflux's `X-Auth-Token` rides along to whatever host the upstream points
+ * at. The origin check in buildUrl() only covers the first URL, so the hops
+ * after it were also an SSRF pivot into the local network.
+ */
+describe("redirect handling", () => {
+  /** Records what a would-be redirect target actually receives. */
+  function victimServer() {
+    let received: Record<string, string> | undefined;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        received = Object.fromEntries(req.headers.entries());
+        return Response.json({ stolen: true });
+      },
+    });
+    servers.push(server);
+    return { server, headers: () => received };
+  }
+
+  /** Redirects everything to `target`, or in a loop back to itself. */
+  function redirectingServer(target?: string) {
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const location = target ?? new URL(req.url).href;
+        return new Response(null, { status: 302, headers: { location } });
+      },
+    });
+    servers.push(server);
+    return server;
+  }
+
+  beforeEach(() => {
+    process.env.TEST_MINIFLUX_TOKEN = "MINIFLUX_SECRET";
+  });
+
+  function tokenService(baseUrl: string): ServiceDefinition {
+    return {
+      id: "miniflux",
+      title: "Miniflux",
+      baseUrl,
+      auth: { type: "header", tokenEnv: "TEST_MINIFLUX_TOKEN", headerName: "X-Auth-Token" },
+      defaultPathPrefix: "/v1",
+    };
+  }
+
+  test("a cross-origin redirect is refused and the credential never leaves", async () => {
+    const victim = victimServer();
+    const upstream = redirectingServer(`http://127.0.0.1:${victim.server.port}/stolen`);
+
+    const result = (await callService(tokenService(`http://127.0.0.1:${upstream.port}`), {
+      method: "GET",
+      path: "/v1/me",
+    })) as { error?: { type: string; message: string } };
+
+    expect(result.error?.type).toBe("upstream_redirect_blocked");
+    expect(result.error?.message).toContain(`127.0.0.1:${victim.server.port}`);
+    // The point of the whole fix: the other host was never contacted at all.
+    expect(victim.headers()).toBeUndefined();
+  });
+
+  test("a same-origin redirect is followed with the credential intact", async () => {
+    let sawToken: string | undefined;
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const url = new URL(req.url);
+        if (url.pathname === "/v1/me") {
+          return new Response(null, { status: 302, headers: { location: "/v1/me/" } });
+        }
+        sawToken = req.headers.get("x-auth-token") ?? undefined;
+        return Response.json({ id: 1 });
+      },
+    });
+    servers.push(server);
+
+    const result = (await callService(tokenService(`http://127.0.0.1:${server.port}`), {
+      method: "GET",
+      path: "/v1/me",
+    })) as { response?: { ok: boolean; body: unknown } };
+
+    expect(result.response?.ok).toBe(true);
+    expect(result.response?.body).toEqual({ id: 1 });
+    expect(sawToken).toBe("MINIFLUX_SECRET");
+  });
+
+  test("a redirect loop is cut instead of followed forever", async () => {
+    const upstream = redirectingServer();
+    const result = (await callService(tokenService(`http://127.0.0.1:${upstream.port}`), {
+      method: "GET",
+      path: "/v1/me",
+    })) as { error?: { type: string } };
+    expect(result.error?.type).toBe("upstream_too_many_redirects");
+  });
+
+  test("a non-GET redirect is returned rather than replayed against another URL", async () => {
+    // Replaying a POST body across a redirect cannot be done correctly for
+    // every body type, so the 3xx is surfaced and the caller decides.
+    const upstream = redirectingServer("/v1/elsewhere");
+    const result = (await callService(tokenService(`http://127.0.0.1:${upstream.port}`), {
+      method: "POST",
+      path: "/v1/entries",
+      body: { title: "x" },
+    })) as { response?: { status: number } };
+    expect(result.response?.status).toBe(302);
   });
 });

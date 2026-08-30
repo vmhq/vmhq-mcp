@@ -19,6 +19,8 @@ type NormalizedErrorType =
   | "invalid_request"
   | "upstream_timeout"
   | "upstream_network_error"
+  | "upstream_redirect_blocked"
+  | "upstream_too_many_redirects"
   | "upstream_error";
 
 function normalizedError(type: NormalizedErrorType, service: ServiceDefinition, message: string, retryable = false): unknown {
@@ -328,6 +330,31 @@ function buildFormData(body: MultipartBody): FormData {
   return fd;
 }
 
+/**
+ * Redirects are followed by hand rather than by fetch.
+ *
+ * fetch only strips `Authorization` when the origin changes, so a service
+ * authenticated with a named header (Miniflux's `X-Auth-Token`) would hand its
+ * credential to whatever host the upstream pointed at. buildUrl() checks the
+ * origin of the first URL only, so the hops after it were also a way into the
+ * local network. Following the chain here keeps every hop inside the
+ * configured origin.
+ */
+const MAX_REDIRECTS = 3;
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function redirectTarget(response: Response, current: URL): URL | undefined {
+  if (!REDIRECT_STATUSES.has(response.status)) return undefined;
+  const location = response.headers.get("location");
+  if (!location) return undefined;
+  try {
+    return new URL(location, current);
+  } catch {
+    return undefined;
+  }
+}
+
 export type CallServiceOptions = {
   timeoutMs?: number;
   operationId?: string;
@@ -385,16 +412,63 @@ export async function callService(
     path: url.pathname,
   });
 
+  // Only GET/HEAD are followed: replaying a body across a redirect cannot be
+  // done correctly for every body type (FormData above all), so for any other
+  // method the 3xx is handed back and the caller decides what to do with it.
+  const followsRedirects = input.method === "GET";
+  const baseOrigin = new URL(service.baseUrl).origin;
+
   try {
-    const response = await fetch(url, {
+    let requestUrl = url;
+    let response = await fetch(requestUrl, {
       method: input.method,
       headers,
       body,
+      // Always manual: for methods we do not follow, the 3xx is the response.
+      redirect: "manual",
       signal: controller.signal,
       // Scoped to this service only; the global TLS defaults stay intact for
       // every other upstream. See ServiceDefinition.insecureTls.
       ...(service.insecureTls ? { tls: { rejectUnauthorized: false } } : {}),
     });
+
+    if (followsRedirects) {
+      let hops = 0;
+      for (let next = redirectTarget(response, requestUrl); next; next = redirectTarget(response, requestUrl)) {
+        if (next.origin !== baseOrigin) {
+          log("error", "upstream_redirect_blocked", {
+            service: service.id,
+            operationId: options.operationId,
+            requestId: options.requestId,
+            actor: options.actor,
+            from: requestUrl.origin,
+            to: next.origin,
+          });
+          return normalizedError(
+            "upstream_redirect_blocked",
+            service,
+            `Upstream tried to redirect to ${next.host}, outside the configured service origin. Refusing to follow it, because the request carries this service's credentials.`,
+          );
+        }
+
+        if (++hops > MAX_REDIRECTS) {
+          return normalizedError(
+            "upstream_too_many_redirects",
+            service,
+            `Upstream redirected more than ${MAX_REDIRECTS} times.`,
+          );
+        }
+
+        requestUrl = next;
+        response = await fetch(requestUrl, {
+          method: input.method,
+          headers,
+          redirect: "manual",
+          signal: controller.signal,
+          ...(service.insecureTls ? { tls: { rejectUnauthorized: false } } : {}),
+        });
+      }
+    }
 
     let responseBody = await parseBody(response);
 
