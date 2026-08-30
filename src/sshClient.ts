@@ -50,6 +50,8 @@ export type SshExecOptions = {
   /** Label used in logs and in the response, e.g. "node" or "lxc:101". */
   target?: string;
   requestId?: string;
+  /** Who is running this, for the audit trail. See RequestContext in mcp.ts. */
+  actor?: string;
 };
 
 export type SshExecSuccess = {
@@ -91,6 +93,44 @@ function sshError(type: SshErrorType, message: string, retryable = false): SshEx
  */
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * Shells accepted for `pct exec` and for the background-job launcher. The shell
+ * is the one token in those commands that cannot be quoted away as a single
+ * argument list entry without changing its meaning for the operator, so it is
+ * restricted to a plain absolute path: no spaces, no shell metacharacters, no
+ * relative lookups. Without this a caller-supplied `shell` would be spliced
+ * into the node-level command and escape the container entirely, taking
+ * PROXMOX_SSH_ALLOWED_VMIDS with it.
+ */
+const SHELL_PATTERN = /^\/[A-Za-z0-9_.\-\/]{1,127}$/u;
+
+export function isAllowedShell(value: string): boolean {
+  return SHELL_PATTERN.test(value);
+}
+
+/** Validates a caller-supplied shell, mirroring assertVmidAllowed(). */
+export function assertShellAllowed(shell: string | undefined): string | undefined {
+  if (shell === undefined) return undefined;
+  if (!isAllowedShell(shell)) {
+    return "shell must be an absolute path to an interpreter, for example /bin/bash.";
+  }
+  return undefined;
+}
+
+/**
+ * Resolves the shell to use and refuses anything the tool layer should already
+ * have rejected. Throwing here keeps the command builders safe on their own,
+ * so a future call site cannot reintroduce the injection by forgetting the
+ * assertShellAllowed() check.
+ */
+function resolveShell(fallback: string, shell?: string): string {
+  const candidate = shell || fallback;
+  if (!isAllowedShell(candidate)) {
+    throw new Error(`Refusing to build a command with an unsafe shell: ${candidate}`);
+  }
+  return candidate;
 }
 
 /** OpenSSH-style fingerprint of a raw public host key blob. */
@@ -209,6 +249,7 @@ export async function runSshCommand(
   log("info", "ssh_exec_started", {
     service: "proxmox_ssh",
     requestId: options.requestId,
+    actor: options.actor,
     host: config.host,
     target,
     command,
@@ -311,6 +352,7 @@ export async function runSshCommand(
     log("error", "ssh_exec_failed", {
       service: "proxmox_ssh",
       requestId: options.requestId,
+      actor: options.actor,
       host: config.host,
       target,
       command,
@@ -323,6 +365,7 @@ export async function runSshCommand(
   log(result.ok ? "info" : "error", "ssh_exec_finished", {
     service: "proxmox_ssh",
     requestId: options.requestId,
+    actor: options.actor,
     host: config.host,
     target,
     command,
@@ -352,7 +395,7 @@ export function assertVmidAllowed(config: ProxmoxSshConfig, vmid: number): strin
 
 /** Builds the `pct exec` invocation that runs a shell command inside a container. */
 export function lxcCommand(config: ProxmoxSshConfig, vmid: number, command: string, shell?: string): string {
-  const containerShell = shell || config.containerShell;
+  const containerShell = shellQuote(resolveShell(config.containerShell, shell));
   return nodeCommand(config, `pct exec ${vmid} -- ${containerShell} -c ${shellQuote(command)}`);
 }
 
@@ -446,7 +489,7 @@ export function jobPurgeCommand(config: ProxmoxSshConfig): string | undefined {
  */
 export function backgroundScript(config: ProxmoxSshConfig, command: string, jobId: string, shell?: string): string {
   const paths = jobPaths(config, jobId);
-  const runner = shell || "/bin/sh";
+  const runner = shellQuote(resolveShell("/bin/sh", shell));
   // The command runs in a subshell so that an `exit` inside it ends the job
   // rather than the wrapper, which still has to record the exit code.
   const wrapper = [

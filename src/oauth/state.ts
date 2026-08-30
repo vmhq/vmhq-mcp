@@ -17,6 +17,18 @@ export type RegisteredClient = {
   clientName?: string;
 };
 
+/** Who authenticated, carried from PocketID through to the issued token. */
+export type Identity = {
+  subject: string;
+  email?: string;
+};
+
+/** Log-friendly name for an identity: the email if there is one, else the sub. */
+export function actorFor(identity: Identity | undefined): string {
+  if (!identity) return "legacy";
+  return identity.email || identity.subject;
+}
+
 export type AuthorizationCode = {
   clientId: string;
   /** Exact redirect URI used in the authorize request (stored for validation) */
@@ -25,6 +37,8 @@ export type AuthorizationCode = {
   scopes: string[];
   /** RFC 8707 resource indicator (optional) */
   resource?: string;
+  /** Undefined only for codes persisted before identities were recorded. */
+  identity?: Identity;
   expiresAt: number;
 };
 
@@ -32,6 +46,25 @@ export type StoredToken = {
   clientId: string;
   scopes: string[];
   resource?: string;
+  /** Undefined for tokens issued before identities were recorded ("legacy"). */
+  identity?: Identity;
+  /** Links the token to its refresh-token family, so revoking one kills both. */
+  familyId?: string;
+  expiresAt: number;
+};
+
+/**
+ * A refresh token. Rotated on every use (OAuth 2.1 requires it for public
+ * clients): each use consumes this one and issues a successor in the same
+ * family. Presenting a token that was already rotated away means it leaked, so
+ * the whole family is revoked rather than just refused.
+ */
+export type StoredRefreshToken = {
+  clientId: string;
+  scopes: string[];
+  resource?: string;
+  identity?: Identity;
+  familyId: string;
   expiresAt: number;
 };
 
@@ -65,6 +98,15 @@ export const codes = new Map<string, AuthorizationCode>();
 export const pendingAuth = new Map<string, PendingAuth>();
 /** token SHA-256 hash → StoredToken */
 export const accessTokens = new Map<string, StoredToken>();
+/** refresh token SHA-256 hash → StoredRefreshToken */
+export const refreshTokens = new Map<string, StoredRefreshToken>();
+/**
+ * Refresh tokens that have already been rotated away, kept until they would
+ * have expired anyway. This is what makes reuse detectable: without it a
+ * replayed token is indistinguishable from a random string, and the theft it
+ * signals goes unnoticed. hash → { familyId, expiresAt }.
+ */
+export const consumedRefreshTokens = new Map<string, { familyId: string; expiresAt: number }>();
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
@@ -74,15 +116,31 @@ export const PENDING_TTL_MS = 10 * 60 * 1000;      // 10 min (PocketID round-tri
 /** Access token lifetime, configurable via MCP_OAUTH_TOKEN_TTL_S (seconds). */
 export const TOKEN_TTL_S = (() => {
   const raw = process.env.MCP_OAUTH_TOKEN_TTL_S;
-  if (!raw) return 60 * 60 * 24 * 30; // 30 days
+  if (!raw) return 60 * 60 * 24; // 24 hours — refresh tokens carry the long tail
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error("MCP_OAUTH_TOKEN_TTL_S must be a positive number of seconds.");
   }
   return value;
 })();
-/** Clients outlive their tokens: prune TOKEN_TTL + 30 days after issuance. */
-export const CLIENT_TTL_MS = (TOKEN_TTL_S + 30 * 24 * 60 * 60) * 1000;
+/** Refresh token lifetime, configurable via MCP_OAUTH_REFRESH_TTL_S (seconds). */
+export const REFRESH_TOKEN_TTL_S = (() => {
+  const raw = process.env.MCP_OAUTH_REFRESH_TTL_S;
+  if (!raw) return 60 * 60 * 24 * 30; // 30 days
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("MCP_OAUTH_REFRESH_TTL_S must be a positive number of seconds.");
+  }
+  return value;
+})();
+
+/**
+ * Clients outlive their tokens: prune 30 days after the longest-lived
+ * credential they can hold. Measured against the refresh TTL, not the access
+ * TTL, so a short access token cannot cause a client to be pruned while its own
+ * refresh token is still valid.
+ */
+export const CLIENT_TTL_MS = (Math.max(TOKEN_TTL_S, REFRESH_TOKEN_TTL_S) + 30 * 24 * 60 * 60) * 1000;
 
 export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
@@ -102,6 +160,8 @@ function loadState(): void {
       authorizationCodes?: Array<[string, AuthorizationCode]>;
       pendingAuth?: Array<[string, PendingAuth]>;
       accessTokens?: Array<[string, StoredToken | number]>;
+      refreshTokens?: Array<[string, StoredRefreshToken]>;
+      consumedRefreshTokens?: Array<[string, { familyId: string; expiresAt: number }]>;
     };
 
     const now = Date.now();
@@ -140,6 +200,19 @@ function loadState(): void {
         }
       }
     }
+
+    // Both are absent from state files written before refresh tokens existed.
+    if (Array.isArray(saved.refreshTokens)) {
+      for (const [hash, token] of saved.refreshTokens) {
+        if (token.expiresAt > now) refreshTokens.set(hash, token);
+      }
+    }
+
+    if (Array.isArray(saved.consumedRefreshTokens)) {
+      for (const [hash, entry] of saved.consumedRefreshTokens) {
+        if (entry.expiresAt > now) consumedRefreshTokens.set(hash, entry);
+      }
+    }
   } catch {
     // Fresh start — no persisted state yet
   }
@@ -153,6 +226,8 @@ export function saveState(): void {
       authorizationCodes: [...codes.entries()],
       pendingAuth: [...pendingAuth.entries()],
       accessTokens: [...accessTokens.entries()],
+      refreshTokens: [...refreshTokens.entries()],
+      consumedRefreshTokens: [...consumedRefreshTokens.entries()],
     };
     const tmp = `${STATE_PATH}.tmp`;
     writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf-8", mode: 0o600 });
@@ -175,6 +250,14 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   for (const [hash, tok] of accessTokens) {
     if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
   }
+  for (const [hash, tok] of refreshTokens) {
+    if (tok.expiresAt <= now) { refreshTokens.delete(hash); dirty = true; }
+  }
+  // A consumed token only needs remembering while it could still be replayed,
+  // which is bounded by the lifetime it would have had.
+  for (const [hash, entry] of consumedRefreshTokens) {
+    if (entry.expiresAt <= now) { consumedRefreshTokens.delete(hash); dirty = true; }
+  }
   for (const [id, client] of clients) {
     // Guard against a non-finite timestamp so the comparison can't silently
     // evaluate to false and keep a client alive forever.
@@ -191,7 +274,25 @@ export function reloadPersistedOAuthState(): void {
   codes.clear();
   pendingAuth.clear();
   accessTokens.clear();
+  refreshTokens.clear();
+  consumedRefreshTokens.clear();
   loadState();
+}
+
+/**
+ * Drops every credential descended from one authorization. Used both for
+ * deliberate revocation and as the response to a replayed refresh token, where
+ * refusing the request alone would leave the thief's other tokens working.
+ */
+export function revokeFamily(familyId: string): number {
+  let revoked = 0;
+  for (const [hash, tok] of accessTokens) {
+    if (tok.familyId === familyId) { accessTokens.delete(hash); revoked++; }
+  }
+  for (const [hash, tok] of refreshTokens) {
+    if (tok.familyId === familyId) { refreshTokens.delete(hash); revoked++; }
+  }
+  return revoked;
 }
 
 loadState();

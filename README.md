@@ -149,6 +149,7 @@ PROXMOX_TOKEN_SECRET=
 # Restrict which containers proxmox_lxc_exec can reach. Empty means all of them.
 # PROXMOX_SSH_ALLOWED_VMIDS=101,102
 # Default shell used inside containers. Alpine guests have no bash.
+# Absolute path to an interpreter, no arguments (validated at startup).
 # PROXMOX_SSH_CONTAINER_SHELL=/bin/sh
 # Per-command timeout and output cap. Defaults: 120000 ms and 30000 characters.
 # PROXMOX_SSH_TIMEOUT_MS=120000
@@ -165,6 +166,22 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # Optional runtime/security settings
 # Restrict CORS to a specific origin (e.g. https://claude.ai). Defaults to *.
 # MCP_CORS_ORIGIN=https://claude.ai
+
+# Comma-separated hosts allowed to receive OAuth authorization codes. Dynamic
+# client registration is public, so without this ANY client that registers can
+# ask you to approve it. Subdomains match; loopback and native-app schemes
+# (cursor://) are always allowed. Strongly recommended.
+# MCP_ALLOWED_REDIRECT_HOSTS=claude.ai
+
+# Comma-separated OIDC subjects or emails allowed to sign in. Unset means
+# PocketID's own per-client group restriction is the only gate.
+# MCP_ALLOWED_SUBJECTS=vicente@example.com
+
+# Access token lifetime in seconds (default 86400 = 24h). Clients renew with a
+# refresh token, which rotates on every use.
+# MCP_OAUTH_TOKEN_TTL_S=86400
+# Refresh token lifetime in seconds (default 2592000 = 30 days).
+# MCP_OAUTH_REFRESH_TTL_S=2592000
 # Timeout for upstream API calls. Defaults to 30000.
 # MCP_UPSTREAM_TIMEOUT_MS=30000
 # Structured log level: silent, error, info, debug. Defaults to info.
@@ -335,6 +352,24 @@ The real limit on a long command is not `PROXMOX_SSH_TIMEOUT_MS` but the MCP cli
 The command runs in a subshell, so an `exit` inside it ends the job without stopping the wrapper from recording the exit code.
 
 Job files are kept for `PROXMOX_SSH_JOB_RETENTION_DAYS` (default 30, `0` disables it) so a finished job can still be read back later. Each launch prunes what has aged out, which needs no timer in this otherwise stateless server; the prune only ever matches the `.log`, `.pid` and `.status` files a job creates, so pointing `PROXMOX_SSH_JOB_DIR` at a shared directory cannot make it delete anything else. A job that runs for longer than the retention window without writing any output would have its files pruned by a later launch — give such jobs a heartbeat (`echo` on a loop) or set the window wider.
+
+### Two endpoints: `/mcp` and `/mcp/read`
+
+`/mcp` exposes every tool. `/mcp/read` exposes the same services and the same
+auth, minus `proxmox_lxc_exec` and `proxmox_node_exec`.
+
+The split exists because everything this server reads — SearXNG results,
+Miniflux articles, Karakeep bookmarks, Home Assistant attributes — is text
+written by someone else, and it lands in the same model context as the tool
+list. An instruction smuggled into a fetched page is read by the agent along
+with the rest, so a session that only needs to read should not also be holding a
+root shell. On `/mcp/read` those tools are never registered, so there is nothing
+for such an instruction to call.
+
+Point your day-to-day client at `/mcp/read`, and add a second connector on
+`/mcp` for the sessions where you actually maintain the node. Both endpoints
+accept the same tokens; the separation is per session, not per credential.
+`vmhq_status` reports which tier it is running under.
 
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 

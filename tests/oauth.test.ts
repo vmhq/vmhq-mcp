@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { SignJWT, exportJWK, generateKeyPair, type CryptoKey, type JWK } from "jose";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,6 +16,34 @@ let oauth: OAuthModule;
 const POCKETID_ISSUER = "https://id.example.com";
 const POCKETID_AUTHORIZE = `${POCKETID_ISSUER}/authorize`;
 const POCKETID_TOKEN = `${POCKETID_ISSUER}/token`;
+const POCKETID_JWKS = `${POCKETID_ISSUER}/jwks`;
+const POCKETID_CLIENT_ID = "mcp-client";
+
+/**
+ * The id_token is verified against the provider's JWKS now, so the mock signs
+ * real tokens with a real key: a stub string would only prove the mock works.
+ */
+let signingKeys: { privateKey: CryptoKey; publicJwk: JWK };
+let attackerKeys: { privateKey: CryptoKey; publicJwk: JWK };
+
+const DEFAULT_CLAIMS = { sub: "user-123", email: "vicente@example.com", name: "Vicente" };
+
+/** Overrides applied to the next issued id_token, for the rejection cases. */
+let idTokenOverride:
+  | { claims?: Record<string, unknown>; issuer?: string; audience?: string; expSecondsFromNow?: number; signWithWrongKey?: boolean; omit?: boolean }
+  | undefined;
+
+async function makeIdToken(): Promise<string> {
+  const o = idTokenOverride ?? {};
+  const key = o.signWithWrongKey ? attackerKeys.privateKey : signingKeys.privateKey;
+  return new SignJWT({ ...DEFAULT_CLAIMS, ...(o.claims ?? {}) })
+    .setProtectedHeader({ alg: "RS256" })
+    .setIssuer(o.issuer ?? POCKETID_ISSUER)
+    .setAudience(o.audience ?? POCKETID_CLIENT_ID)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(Date.now() / 1000) + (o.expSecondsFromNow ?? 3600))
+    .sign(key);
+}
 
 const testConfig = {
   publicUrl: "https://mcp.example.com",
@@ -39,19 +68,34 @@ function installPocketIdMock(): void {
         issuer: POCKETID_ISSUER,
         authorization_endpoint: POCKETID_AUTHORIZE,
         token_endpoint: POCKETID_TOKEN,
+        jwks_uri: POCKETID_JWKS,
       });
+    }
+    if (urlStr === POCKETID_JWKS) {
+      return Response.json({ keys: [{ ...signingKeys.publicJwk, alg: "RS256", use: "sig" }] });
     }
     if (urlStr === POCKETID_TOKEN) {
       if (pocketIdTokenShouldFail) {
         return Response.json({ error: "invalid_grant" }, { status: 400 });
       }
-      return Response.json({ access_token: "pocket-access", id_token: "pocket-id", token_type: "Bearer" });
+      return Response.json({
+        access_token: "pocket-access",
+        token_type: "Bearer",
+        ...(idTokenOverride?.omit ? {} : { id_token: await makeIdToken() }),
+      });
     }
     throw new Error(`unexpected fetch in test: ${urlStr}`);
   };
 }
 
 beforeAll(async () => {
+  const [real, attacker] = await Promise.all([
+    generateKeyPair("RS256", { extractable: true }),
+    generateKeyPair("RS256", { extractable: true }),
+  ]);
+  signingKeys = { privateKey: real.privateKey, publicJwk: await exportJWK(real.publicKey) };
+  attackerKeys = { privateKey: attacker.privateKey, publicJwk: await exportJWK(attacker.publicKey) };
+
   rmSync(statePath, { force: true });
   process.env.MCP_LOG_LEVEL = "silent";
   process.env.MCP_OAUTH_STATE_PATH = statePath;
@@ -61,6 +105,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   pocketIdTokenShouldFail = false;
+  idTokenOverride = undefined;
   oauth.resetPocketIdDiscoveryCache();
 });
 
@@ -289,7 +334,9 @@ describe("GET /oauth/authorize", () => {
     );
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Sign in with PocketID");
+    expect(html).toContain("Continue to PocketID");
+    // The destination is what the user has to judge, so it must be on the page.
+    expect(html).toContain("client.example.com");
     const location = new URL(pocketIdUrlFromConsentPage(html));
     expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
     expect(location.searchParams.get("client_id")).toBe("mcp-client");
@@ -801,10 +848,18 @@ describe("DCR client expiry", () => {
   });
 });
 
-describe("access token TTL", () => {
-  test("default access token TTL is 30 days", async () => {
-    const { TOKEN_TTL_S } = await import("../src/oauth/state.js");
-    expect(TOKEN_TTL_S).toBe(60 * 60 * 24 * 30);
+describe("token lifetimes", () => {
+  test("access tokens last a day and refresh tokens carry the long tail", async () => {
+    const { TOKEN_TTL_S, REFRESH_TOKEN_TTL_S } = await import("../src/oauth/state.js");
+    expect(TOKEN_TTL_S).toBe(60 * 60 * 24);
+    expect(REFRESH_TOKEN_TTL_S).toBe(60 * 60 * 24 * 30);
+  });
+
+  test("clients are pruned against the longest credential they can hold", async () => {
+    // A client pruned before its own refresh token expires would break the
+    // refresh grant it was issued for.
+    const { CLIENT_TTL_MS, REFRESH_TOKEN_TTL_S } = await import("../src/oauth/state.js");
+    expect(CLIENT_TTL_MS).toBeGreaterThan(REFRESH_TOKEN_TTL_S * 1000);
   });
 });
 
@@ -828,5 +883,373 @@ describe("state file permissions", () => {
     const { statSync } = await import("node:fs");
     await register("https://client.example.com/cb");
     expect(statSync(statePath).mode & 0o777).toBe(0o600);
+  });
+});
+
+/**
+ * Dynamic client registration is public and accepts any HTTPS host, so the
+ * consent page and the destination allowlist are the only things standing
+ * between a stranger's client and a token that carries a root shell.
+ */
+describe("redirect destination control", () => {
+  const ALLOWLIST = "MCP_ALLOWED_REDIRECT_HOSTS";
+  const originalAllowlist = process.env[ALLOWLIST];
+
+  afterEach(() => {
+    if (originalAllowlist === undefined) delete process.env[ALLOWLIST];
+    else process.env[ALLOWLIST] = originalAllowlist;
+  });
+
+  test("registration refuses a destination outside the allowlist", async () => {
+    process.env[ALLOWLIST] = "claude.ai";
+    const res = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: ["https://evil.example.com/cb"], client_name: "Claude" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_redirect_uris" });
+  });
+
+  test("registration accepts allowlisted hosts and their subdomains", async () => {
+    process.env[ALLOWLIST] = "claude.ai";
+    for (const uri of ["https://claude.ai/api/mcp/auth_callback", "https://api.claude.ai/cb"]) {
+      const res = await oauth.registerClient(
+        new Request("https://mcp.example.com/oauth/register", {
+          method: "POST",
+          body: JSON.stringify({ redirect_uris: [uri] }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      expect(res.status).toBe(201);
+    }
+  });
+
+  test("loopback and native-app schemes stay usable under an allowlist", async () => {
+    process.env[ALLOWLIST] = "claude.ai";
+    for (const uri of ["http://127.0.0.1:8976/callback", "http://localhost:1455/cb", "cursor://anysphere.cursor-mcp/oauth/cb"]) {
+      const res = await oauth.registerClient(
+        new Request("https://mcp.example.com/oauth/register", {
+          method: "POST",
+          body: JSON.stringify({ redirect_uris: [uri] }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      expect(res.status).toBe(201);
+    }
+  });
+
+  test("a client registered before the allowlist cannot authorize afterwards", async () => {
+    // Registered while everything was allowed…
+    delete process.env[ALLOWLIST];
+    const redirectUri = "https://evil.example.com/cb";
+    const clientId = await register(redirectUri);
+
+    // …and blocked once the allowlist exists, without needing to prune state.
+    process.env[ALLOWLIST] = "claude.ai";
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("evil.example.com");
+  });
+
+  test("the consent page leads with the destination, not the self-reported name", async () => {
+    delete process.env[ALLOWLIST];
+    const redirectUri = "https://evil.example.com/cb";
+    const res = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "Claude" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { client_id: clientId } = (await res.json()) as { client_id: string };
+
+    const page = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      { ...testConfig, grantSummary: ["A root shell on pve.lan (the node and every container), as root"] },
+    );
+    const html = await page.text();
+
+    expect(html).toContain("evil.example.com");
+    expect(html).toContain("has not been verified");
+    expect(html).toContain("A root shell on pve.lan");
+    // With no allowlist enforced, the page has to say so.
+    expect(html).toContain("No destination allowlist is configured");
+  });
+
+  test("the allowlist warning disappears once one is enforced", async () => {
+    process.env[ALLOWLIST] = "claude.ai";
+    const redirectUri = "https://claude.ai/api/mcp/auth_callback";
+    const clientId = await register(redirectUri);
+    const page = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      testConfig,
+    );
+    const html = await page.text();
+    expect(html).toContain("claude.ai");
+    expect(html).not.toContain("No destination allowlist is configured");
+  });
+
+  test("the client name cannot inject markup into the consent page", async () => {
+    delete process.env[ALLOWLIST];
+    const redirectUri = "https://client.example.com/cb";
+    const res = await oauth.registerClient(
+      new Request("https://mcp.example.com/oauth/register", {
+        method: "POST",
+        body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "<img src=x onerror=alert(1)>" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { client_id: clientId } = (await res.json()) as { client_id: string };
+    const page = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      testConfig,
+    );
+    const html = await page.text();
+    expect(html).not.toContain("<img src=x");
+    expect(html).toContain("&lt;img src=x");
+  });
+});
+
+type TokenResponse = { access_token: string; refresh_token: string; expires_in: number; scope: string };
+
+/** Runs the whole bridge flow and returns the issued token pair. */
+async function fullFlowTokens(): Promise<TokenResponse> {
+  const { tokenRes } = await fullFlow({ redirectUri: "https://client.example.com/cb" });
+  expect(tokenRes.status).toBe(200);
+  return (await tokenRes.json()) as TokenResponse;
+}
+
+async function fullFlowAccessToken(): Promise<string> {
+  return (await fullFlowTokens()).access_token;
+}
+
+function postToken(fields: Record<string, string>): Promise<Response> {
+  return oauth.exchangeToken(formRequest("https://mcp.example.com/oauth/token", fields));
+}
+
+async function refresh(refreshToken: string): Promise<TokenResponse> {
+  const res = await postToken({ grant_type: "refresh_token", refresh_token: refreshToken });
+  expect(res.status).toBe(200);
+  return (await res.json()) as TokenResponse;
+}
+
+/** Drives authorize → callback and returns the error page text. */
+async function callbackFails(): Promise<string> {
+  const redirectUri = "https://client.example.com/cb";
+  const clientId = await register(redirectUri);
+  const beginRes = await oauth.beginAuthorize(
+    authorizeRequest({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      code_challenge: s256("v"),
+      code_challenge_method: "S256",
+      state: "abc",
+    }),
+    testConfig,
+  );
+  const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
+  const cbRes = await oauth.oauthCallback(
+    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+    testConfig,
+  );
+  expect(cbRes.status).toBe(400);
+  return cbRes.text();
+}
+
+/**
+ * The access token is what carries a root shell on the hypervisor, so who holds
+ * one has to be answerable, and a leaked one has to be both short-lived and
+ * cuttable. These cover the identity bound to the token and the refresh
+ * lifecycle that replaces the old 30-day bearer.
+ */
+describe("identity bound to the token", () => {
+  test("the signed-in person is carried from PocketID through to the access token", async () => {
+    const token = await fullFlowAccessToken();
+    const info = oauth.verifyAccessToken(token)!;
+    expect(info.extra?.actor).toBe("vicente@example.com");
+    expect(info.extra?.identity).toEqual({ subject: "user-123", email: "vicente@example.com" });
+  });
+
+  test("falls back to the subject when the provider asserts no email", async () => {
+    idTokenOverride = { claims: { sub: "user-456", email: undefined } };
+    const token = await fullFlowAccessToken();
+    expect(oauth.verifyAccessToken(token)!.extra?.actor).toBe("user-456");
+  });
+
+  test("rejects an id_token signed by the wrong key", async () => {
+    idTokenOverride = { signWithWrongKey: true };
+    expect(await callbackFails()).toContain("Sign-in with the identity provider failed");
+  });
+
+  test("rejects an id_token from another issuer or for another audience", async () => {
+    idTokenOverride = { issuer: "https://evil.example.com" };
+    expect(await callbackFails()).toContain("Sign-in with the identity provider failed");
+    idTokenOverride = { audience: "some-other-client" };
+    expect(await callbackFails()).toContain("Sign-in with the identity provider failed");
+  });
+
+  test("rejects an expired id_token", async () => {
+    idTokenOverride = { expSecondsFromNow: -60 };
+    expect(await callbackFails()).toContain("Sign-in with the identity provider failed");
+  });
+
+  test("says what to fix when the provider returns no id_token at all", async () => {
+    idTokenOverride = { omit: true };
+    expect(await callbackFails()).toContain("POCKETID_SCOPES includes openid");
+  });
+
+  test("a token persisted before identities existed still authenticates, as legacy", async () => {
+    const { accessTokens, sha256 } = await import("../src/oauth/state.js");
+    const legacy = "vmhq_mcp_legacy_token";
+    accessTokens.set(sha256(legacy), {
+      clientId: "legacy",
+      scopes: ["mcp"],
+      expiresAt: Date.now() + 60_000,
+    });
+    const info = oauth.verifyAccessToken(legacy);
+    expect(info).toBeDefined();
+    expect(info!.extra?.actor).toBe("legacy");
+  });
+});
+
+describe("MCP_ALLOWED_SUBJECTS", () => {
+  const VAR = "MCP_ALLOWED_SUBJECTS";
+  afterEach(() => { delete process.env[VAR]; });
+
+  test("unset lets anyone PocketID authenticated through", async () => {
+    expect(await fullFlowAccessToken()).toBeTruthy();
+  });
+
+  test("matches on email or subject", async () => {
+    process.env[VAR] = "vicente@example.com";
+    expect(await fullFlowAccessToken()).toBeTruthy();
+    process.env[VAR] = "user-123";
+    expect(await fullFlowAccessToken()).toBeTruthy();
+  });
+
+  test("blocks an account that is not listed, before any code is issued", async () => {
+    process.env[VAR] = "someone-else@example.com";
+    expect(await callbackFails()).toContain("not allowed to access this server");
+  });
+});
+
+describe("refresh tokens", () => {
+  test("the token response carries a refresh token and a one-day access token", async () => {
+    const tokens = await fullFlowTokens();
+    expect(tokens.refresh_token).toBeTruthy();
+    expect(tokens.expires_in).toBe(60 * 60 * 24);
+  });
+
+  test("a refresh token buys a new access token that keeps the identity", async () => {
+    const first = await fullFlowTokens();
+    const refreshed = await refresh(first.refresh_token);
+    expect(refreshed.access_token).not.toBe(first.access_token);
+    expect(oauth.verifyAccessToken(refreshed.access_token)!.extra?.actor).toBe("vicente@example.com");
+  });
+
+  test("rotation invalidates the refresh token that was just used", async () => {
+    const first = await fullFlowTokens();
+    await refresh(first.refresh_token);
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token });
+    expect(res.status).toBe(400);
+  });
+
+  test("replaying a rotated refresh token revokes the whole family", async () => {
+    const first = await fullFlowTokens();
+    const second = await refresh(first.refresh_token);
+
+    // The thief replays the token the legitimate client already spent.
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token });
+    expect(res.status).toBe(400);
+
+    // Everything descended from that authorization is gone, including the
+    // credentials the legitimate client was still holding.
+    expect(oauth.verifyAccessToken(second.access_token)).toBeUndefined();
+    const afterReuse = await postToken({ grant_type: "refresh_token", refresh_token: second.refresh_token });
+    expect(afterReuse.status).toBe(400);
+  });
+
+  test("an unknown refresh token is refused without touching anything else", async () => {
+    const live = await fullFlowTokens();
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: "vmhq_rt_never_issued" });
+    expect(res.status).toBe(400);
+    expect(oauth.verifyAccessToken(live.access_token)).toBeDefined();
+  });
+
+  test("a refresh token cannot be used by a different client", async () => {
+    const tokens = await fullFlowTokens();
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: "someone-else" });
+    expect(res.status).toBe(400);
+  });
+
+  test("metadata advertises the refresh grant", async () => {
+    const meta = await oauth.authorizationServerMetadata(testConfig, new Request("https://mcp.example.com/x")).json();
+    expect(meta.grant_types_supported).toContain("refresh_token");
+  });
+});
+
+describe("revocation", () => {
+  test("revoking the access token also kills its refresh token", async () => {
+    const tokens = await fullFlowTokens();
+    await oauth.revokeToken(formRequest("https://mcp.example.com/oauth/revoke", { token: tokens.access_token }));
+    expect(oauth.verifyAccessToken(tokens.access_token)).toBeUndefined();
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: tokens.refresh_token });
+    expect(res.status).toBe(400);
+  });
+
+  test("listSessions reports who holds a token and never leaks the token itself", async () => {
+    const tokens = await fullFlowTokens();
+    const sessions = oauth.listSessions();
+    const mine = sessions.find((s) => s.actor === "vicente@example.com");
+    expect(mine).toBeDefined();
+    expect(mine!.renewable).toBe(true);
+    const serialized = JSON.stringify(sessions);
+    expect(serialized).not.toContain(tokens.access_token);
+    expect(serialized).not.toContain(tokens.refresh_token);
+  });
+
+  test("revokeSessions cuts a person off, refresh token included", async () => {
+    const tokens = await fullFlowTokens();
+    const revoked = oauth.revokeSessions({ actor: "vicente@example.com" });
+    expect(revoked).toBeGreaterThanOrEqual(2);
+    expect(oauth.verifyAccessToken(tokens.access_token)).toBeUndefined();
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: tokens.refresh_token });
+    expect(res.status).toBe(400);
+  });
+
+  test("revokeSessions with no matching filter changes nothing", async () => {
+    const tokens = await fullFlowTokens();
+    expect(oauth.revokeSessions({ actor: "nobody@example.com" })).toBe(0);
+    expect(oauth.verifyAccessToken(tokens.access_token)).toBeDefined();
   });
 });

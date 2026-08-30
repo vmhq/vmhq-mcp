@@ -57,6 +57,22 @@ describe("loadProxmoxSshConfig", () => {
     });
   });
 
+  test("tolerates surrounding whitespace and an empty value on the container shell", () => {
+    process.env.PROXMOX_SSH_HOST = "192.168.1.10";
+    for (const [raw, expected] of [["  /bin/bash  ", "/bin/bash"], ["", "/bin/sh"], ["   ", "/bin/sh"]] as const) {
+      process.env.PROXMOX_SSH_CONTAINER_SHELL = raw;
+      expect(loadProxmoxSshConfig()?.containerShell).toBe(expected);
+    }
+  });
+
+  test("rejects a container shell that could break out of the pct exec command", () => {
+    process.env.PROXMOX_SSH_HOST = "192.168.1.10";
+    for (const shell of ["/bin/sh -c 'id' #", "sh", "/bin/sh; id", "/bin/sh && id"]) {
+      process.env.PROXMOX_SSH_CONTAINER_SHELL = shell;
+      expect(() => loadProxmoxSshConfig()).toThrow("PROXMOX_SSH_CONTAINER_SHELL");
+    }
+  });
+
   test("reads port, user, sudo, shell and the container allowlist", () => {
     process.env.PROXMOX_SSH_HOST = "pve.local";
     process.env.PROXMOX_SSH_PORT = "2222";
