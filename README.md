@@ -6,7 +6,6 @@ The server protects the MCP endpoint with its own bearer token (`MCP_ACCESS_TOKE
 
 ## Included services
 
-- Home Assistant
 - Miniflux
 - Karakeep
 - SearXNG
@@ -99,7 +98,6 @@ POCKETID_CLIENT_SECRET=
 
 # Service base URLs
 # Leave a URL empty to disable that service.
-HOME_ASSISTANT_BASE_URL=https://home-assistant.example.com
 MINIFLUX_BASE_URL=https://miniflux.example.com
 KARAKEEP_BASE_URL=https://karakeep.example.com
 SEARXNG_BASE_URL=https://searxng.example.com
@@ -108,10 +106,6 @@ MEMOS_BASE_URL=https://memos.example.com
 ADGUARD_BASE_URL=https://adguard.example.com
 
 # Service credentials
-HOME_ASSISTANT_TOKEN=
-# Pinned Home Assistant entities — comma-separated entity_id, optionally with :Alias suffix.
-# Activates home_assistant_pinned_entities tool so agents skip the full get_states call.
-# HOME_ASSISTANT_PINNED_ENTITIES=light.tira_led_tv:RGB TV,switch.tv,sensor.temperatura_exterior:Temp Exterior
 MINIFLUX_TOKEN=
 KARAKEEP_TOKEN=
 MEMOS_TOKEN=
@@ -276,8 +270,6 @@ If the `POCKETID_*` vars are not set, the interactive `/oauth/authorize` flow re
 
 For each service:
 
-- `home_assistant_api_reference`, `home_assistant_operation`, `home_assistant_request`
-- `home_assistant_pinned_entities` — fetches your configured pinned entities in parallel (enabled by `HOME_ASSISTANT_PINNED_ENTITIES`)
 - `miniflux_api_reference`, `miniflux_operation`, `miniflux_request`
 - `karakeep_api_reference`, `karakeep_operation`, `karakeep_request`
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
@@ -288,11 +280,10 @@ For each service:
 
 Recommended agent workflow:
 
-1. For Home Assistant, call `home_assistant_pinned_entities` first to get the IDs and current state of your most-used entities (if configured).
-2. Call `*_api_reference` with `group` or `search` to discover available operations.
-3. Pick an `operationId`.
-4. Run `*_operation` with `pathParams`, `query`, and/or `body`.
-5. Use `*_request` only when the service's documentation has an endpoint not yet in the local catalogue.
+1. Call `*_api_reference` with `group` or `search` to discover available operations.
+2. Pick an `operationId`.
+3. Run `*_operation` with `pathParams`, `query`, and/or `body`.
+4. Use `*_request` only when the service's documentation has an endpoint not yet in the local catalogue.
 
 Example:
 
@@ -367,7 +358,7 @@ Job files are kept for `PROXMOX_SSH_JOB_RETENTION_DAYS` (default 30, `0` disable
 auth, minus `proxmox_lxc_exec` and `proxmox_node_exec`.
 
 The split exists because everything this server reads — SearXNG results,
-Miniflux articles, Karakeep bookmarks, Home Assistant attributes — is text
+Miniflux articles, Karakeep bookmarks — is text
 written by someone else, and it lands in the same model context as the tool
 list. An instruction smuggled into a fetched page is read by the agent along
 with the rest, so a session that only needs to read should not also be holding a
@@ -414,7 +405,6 @@ The response returns the status code, useful response headers, and the body as t
 
 The local catalogue was built from the official documentation reviewed on 2026-05-13:
 
-- Home Assistant REST API: https://developers.home-assistant.io/docs/api/rest/
 - Miniflux API: https://miniflux.app/docs/api.html
 - Karakeep API: https://docs.karakeep.app/api/karakeep-api/
 - SearXNG Search API: https://docs.searxng.org/dev/search_api.html

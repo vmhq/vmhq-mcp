@@ -40,14 +40,6 @@ A service is silently **disabled** when its `*_BASE_URL` is empty or unset. No e
 
 `sshKnownHosts.ts` pins the node's SSH host key on first use when `PROXMOX_SSH_HOST_FINGERPRINT` is unset, recording it at `PROXMOX_SSH_KNOWN_HOSTS_PATH` (default `./data/proxmox-known-hosts.json`, written atomically at `0600` like the OAuth state) and refusing a later key change with `ssh_host_key_mismatch`; an explicit fingerprint always wins, and an unwritable store logs `ssh_host_key_pin_failed` rather than blocking the connection. `redactCommand()` masks known secret shapes and truncates to 200 characters before a command reaches the `ssh_exec_*` logs — the response to the caller keeps the full command. `callService()` follows redirects manually (`redirect: "manual"`, GET only, max 3 hops) and refuses any hop that leaves the configured origin with `upstream_redirect_blocked`: fetch strips `Authorization` cross-origin but not header-named credentials like Miniflux's `X-Auth-Token`, and `buildUrl()`'s origin check only covers the first URL.
 
-`HOME_ASSISTANT_PINNED_ENTITIES` is an optional comma-separated list of Home Assistant entity IDs, each with an optional `:Alias` suffix:
-
-```
-HOME_ASSISTANT_PINNED_ENTITIES=light.tira_led_tv:RGB TV,switch.tv,sensor.temperatura_exterior:Temp Exterior
-```
-
-When set, a `home_assistant_pinned_entities` tool is registered that fetches those entity states in parallel. The tool description lists all aliases so the agent can identify entities by friendly name before calling the tool. When unset, the tool is not registered and there is no overhead.
-
 The `static` auth type (used by Proxmox) sets a fixed `headerName: value` pair directly at startup (no env lookup at request time).
 
 Miniflux auth mode is controlled by `MINIFLUX_AUTH_MODE`:

@@ -126,14 +126,6 @@ function adguardAuth(readEnv: (name: string, fallback?: string) => string): Serv
 
 export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
   {
-    id: "home_assistant",
-    title: "Home Assistant",
-    baseUrlEnv: "HOME_ASSISTANT_BASE_URL",
-    auth: bearerAuth("HOME_ASSISTANT_TOKEN"),
-    defaultPathPrefix: "/api",
-    pingPath: "/api/",
-  },
-  {
     id: "miniflux",
     title: "Miniflux",
     baseUrlEnv: "MINIFLUX_BASE_URL",

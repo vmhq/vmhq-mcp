@@ -1,6 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { PinnedHaEntity } from "./config.js";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
 import { callService, interpolatePath } from "./serviceClient.js";
 import {
@@ -63,7 +62,6 @@ const commonRequestFields = {
   headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
   fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects. Useful for large arrays like /api/states to reduce token usage."),
   maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
-  domain: z.string().optional().describe("Optional Home Assistant domain filter. When the response is an array of objects with entity_id, only items matching domain.* are kept. Example: light, switch, sensor."),
 };
 
 const serviceRequestSchema = {
@@ -79,7 +77,7 @@ const apiReferenceSchema = {
 
 const apiOperationSchema = {
   operationId: z.string().min(1).describe("Operation ID from the matching *_api_reference tool."),
-  pathParams: z.record(z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {entity_id}."),
+  pathParams: z.record(z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {memo}."),
   ...commonRequestFields,
 };
 
@@ -378,7 +376,6 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
       headers?: Record<string, string>;
       fields?: ServiceRequestInput["fields"];
       maxLength?: ServiceRequestInput["maxLength"];
-      domain?: ServiceRequestInput["domain"];
     }) => {
       const endpoint = endpointFor(service.id, input.operationId);
 
@@ -400,7 +397,6 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
           headers: input.headers,
           fields: input.fields,
           maxLength: input.maxLength,
-          domain: input.domain,
         },
         { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, ...ctx },
       );
@@ -417,39 +413,6 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
     async (input: ServiceRequestInput) => {
       const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, ...ctx });
       return textResult(result, input.maxLength);
-    },
-  );
-}
-
-function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefinition, pinnedHaEntities: PinnedHaEntity[], upstreamTimeoutMs: number, ctx: RequestContext): void {
-  const pinnedSummary = pinnedHaEntities
-    .map(({ entityId, alias }) => (alias ? `${alias} (${entityId})` : entityId))
-    .join(", ");
-
-  server.tool(
-    "home_assistant_pinned_entities",
-    `Return the current state of your pinned Home Assistant entities: ${pinnedSummary}. Call this first to get entity IDs and states without fetching all entities.`,
-    {
-      fields: z.array(z.string()).optional().describe("Optional list of state fields to keep per entity, e.g. ['entity_id','state','attributes.friendly_name']."),
-    },
-    { title: "Home Assistant Pinned Entities" },
-    async ({ fields }: { fields?: string[] }) => {
-      const results = await Promise.all(
-        pinnedHaEntities.map(({ entityId }) =>
-          callService(
-            service,
-            { method: "GET", path: `/api/states/${entityId}`, fields },
-            { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: "get_state", ...ctx },
-          ),
-        ),
-      );
-
-      const payload = pinnedHaEntities.map(({ entityId, alias }, i) => ({
-        entity_id: entityId,
-        ...(alias ? { alias } : {}),
-        result: results[i],
-      }));
-      return textResult(payload);
     },
   );
 }
@@ -666,7 +629,6 @@ export type CreateMcpServerOptions = {
   services: ServiceDefinition[];
   iconUrl: string;
   upstreamTimeoutMs?: number;
-  pinnedHaEntities?: PinnedHaEntity[];
   requestId?: string;
   /** email ?? sub of the caller, or "static-token" / "legacy". */
   actor?: string;
@@ -682,7 +644,6 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
     services,
     iconUrl,
     upstreamTimeoutMs = 30_000,
-    pinnedHaEntities = [],
     requestId,
     actor,
     proxmoxSsh,
@@ -698,7 +659,6 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
   });
 
   const enabledServiceIds = new Set(services.map((service) => service.id));
-  const homeAssistantService = services.find((service) => service.id === "home_assistant");
 
   registerStatusTools(server, services, enabledServiceIds, iconUrl, tier, ctx, proxmoxSsh);
 
@@ -713,10 +673,6 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 
   for (const service of services) {
     registerServiceTools(server, service, upstreamTimeoutMs, ctx);
-
-    if (service === homeAssistantService && pinnedHaEntities.length > 0) {
-      registerHomeAssistantPinnedTool(server, service, pinnedHaEntities, upstreamTimeoutMs, ctx);
-    }
   }
 
   return server;

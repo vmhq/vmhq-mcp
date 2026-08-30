@@ -27,40 +27,6 @@ export type ApiCatalog = {
 const checkedAt = "2026-05-14";
 
 export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
-  home_assistant: {
-    service: "home_assistant",
-    title: "Home Assistant REST API",
-    docsUrl: "https://developers.home-assistant.io/docs/api/rest/",
-    checkedAt,
-    auth: "Bearer token in Authorization header.",
-    notes: [
-      "Home Assistant exposes dynamic domain services at /api/services/{domain}/{service}; discover available services first with home_assistant_operation:get_services.",
-      "POST /api/states/{entity_id} only changes Home Assistant state representation. It does not control the physical device; use call_service for device actions.",
-      "Some services require or reject the return_response query flag depending on whether the service returns data.",
-      "get_states returns every entity state and can be very large. Use fields, maxLength, or domain parameters to limit response size.",
-      "get_history returns time-series data that grows quickly. Always use filter_entity_id, end_time, minimal_response, no_attributes and significant_changes_only.",
-    ],
-    endpoints: [
-      { operationId: "ping", method: "GET", path: "/api/", group: "system", summary: "Check that the API is reachable." },
-      { operationId: "get_config", method: "GET", path: "/api/config", group: "system", summary: "Return current Home Assistant configuration." },
-      { operationId: "get_events", method: "GET", path: "/api/events", group: "discovery", summary: "List available event types." },
-      { operationId: "get_services", method: "GET", path: "/api/services", group: "discovery", summary: "List available service domains and services." },
-      { operationId: "get_states", method: "GET", path: "/api/states", group: "state", summary: "List all entity states." },
-      { operationId: "get_state", method: "GET", path: "/api/states/{entity_id}", group: "state", summary: "Get one entity state." },
-      { operationId: "set_state", method: "POST", path: "/api/states/{entity_id}", group: "state", summary: "Create or update an entity state representation.", body: "State object.", destructive: true },
-      { operationId: "fire_event", method: "POST", path: "/api/events/{event_type}", group: "events", summary: "Fire an event.", body: "Optional event_data object.", destructive: true },
-      { operationId: "call_service", method: "POST", path: "/api/services/{domain}/{service}", group: "services", summary: "Call a Home Assistant service.", query: ["return_response"], body: "service_data object.", destructive: true },
-      { operationId: "render_template", method: "POST", path: "/api/template", group: "template", summary: "Render a Home Assistant template.", body: "{ template: string }" },
-      { operationId: "check_config", method: "POST", path: "/api/config/core/check_config", group: "system", summary: "Trigger configuration.yaml validation.", destructive: true },
-      { operationId: "handle_intent", method: "POST", path: "/api/intent/handle", group: "intent", summary: "Handle an intent.", body: "Intent request object." },
-      { operationId: "get_error_log", method: "GET", path: "/api/error_log", group: "logs", summary: "Return Home Assistant error log as plain text." },
-      { operationId: "get_history", method: "GET", path: "/api/history/period/{timestamp}", group: "history", summary: "Return state history since timestamp.", query: ["filter_entity_id", "end_time", "minimal_response", "no_attributes", "significant_changes_only"] },
-      { operationId: "get_logbook", method: "GET", path: "/api/logbook/{timestamp}", group: "history", summary: "Return logbook entries since timestamp.", query: ["entity", "end_time"] },
-      { operationId: "get_calendars", method: "GET", path: "/api/calendars", group: "calendar", summary: "List calendar entities." },
-      { operationId: "get_calendar_events", method: "GET", path: "/api/calendars/{calendar_entity_id}", group: "calendar", summary: "List calendar events in a date range.", query: ["start", "end"] },
-      { operationId: "get_camera_proxy", method: "GET", path: "/api/camera_proxy/{camera_entity_id}", group: "media", summary: "Return camera image proxy content." },
-    ],
-  },
   miniflux: {
     service: "miniflux",
     title: "Miniflux API",

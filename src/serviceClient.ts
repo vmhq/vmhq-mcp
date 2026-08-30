@@ -202,9 +202,9 @@ export function filterFields(data: unknown, parsedFields: ParsedField[]): unknow
 
     const filtered: Record<string, unknown> = {};
     for (const { raw, path } of parsedFields) {
-      // Literal key first: response keys can themselves contain dots
-      // (domains, Home Assistant entity IDs), so "light.office" must match
-      // a top-level key before being treated as a nested path.
+      // Literal key first: response keys can themselves contain dots, so
+      // "light.office" must match a top-level key before being treated as a
+      // nested path.
       if (Object.hasOwn(record, raw)) {
         filtered[raw] = record[raw];
         continue;
@@ -218,20 +218,6 @@ export function filterFields(data: unknown, parsedFields: ParsedField[]): unknow
   }
 
   return data;
-}
-
-function filterByDomain(data: unknown, domain: string): unknown {
-  if (!Array.isArray(data)) {
-    return data;
-  }
-
-  const prefix = `${domain}.`;
-  return data.filter((item) => {
-    if (item !== null && typeof item === "object" && "entity_id" in item) {
-      return String((item as Record<string, unknown>).entity_id).startsWith(prefix);
-    }
-    return false;
-  });
 }
 
 /** Cap on upstream response bodies (10 MiB) to bound process memory. */
@@ -474,10 +460,6 @@ export async function callService(
 
     if (input.fields && Array.isArray(input.fields) && input.fields.length > 0) {
       responseBody = filterFields(responseBody, parseFields(input.fields));
-    }
-
-    if (input.domain) {
-      responseBody = filterByDomain(responseBody, input.domain);
     }
 
     const durationMs = Math.round(performance.now() - startedAt);
