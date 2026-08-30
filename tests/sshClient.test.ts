@@ -1,8 +1,17 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { Server, utils, type Connection } from "ssh2";
+import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   assertVmidAllowed,
+  backgroundScript,
+  jobPaths,
+  jobPurgeCommand,
+  jobStatusScript,
+  JOB_ID_PATTERN,
+  newJobId,
+  parseJobStatus,
   hostKeyFingerprint,
   isSshFailure,
   lxcCommand,
@@ -79,6 +88,8 @@ function configFor(port: number, overrides: Partial<ProxmoxSshConfig> = {}): Pro
     maxOutputChars: 30_000,
     sudo: false,
     containerShell: "/bin/sh",
+    jobDir: "/var/log/vmhq-mcp",
+    jobRetentionDays: 30,
     ...overrides,
   };
 }
@@ -289,4 +300,155 @@ describe("parsePctList", () => {
     expect(parsePctList("permission denied")).toEqual([]);
     expect(parsePctList("")).toEqual([]);
   });
+});
+
+describe("background jobs", () => {
+  test("mints job IDs that survive the tool's own validation", () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect(newJobId()).toMatch(JOB_ID_PATTERN);
+    }
+  });
+
+  test("puts the log, pid and status files under the configured job directory", () => {
+    const paths = jobPaths(configFor(22, { jobDir: "/srv/jobs/" }), "abc123abc123");
+
+    expect(paths).toEqual({
+      dir: "/srv/jobs",
+      logPath: "/srv/jobs/abc123abc123.log",
+      statusPath: "/srv/jobs/abc123abc123.status",
+      pidPath: "/srv/jobs/abc123abc123.pid",
+    });
+  });
+
+  test("detaches the command and keeps it out of the launcher's quoting", () => {
+    const script = backgroundScript(configFor(22), "echo 'it works'", "abc123abc123");
+
+    expect(script).toContain("mkdir -p '/var/log/vmhq-mcp'");
+    expect(script).toContain("command -v setsid");
+    expect(script).toContain("nohup");
+    expect(script).toContain("< /dev/null > /dev/null 2>&1 &");
+    // The command keeps its own quotes, escaped one level up by the launcher.
+    expect(script).toContain(`echo '\\''it works'\\''`);
+  });
+
+  test("runs the command in a subshell so an exit still records the status", () => {
+    const script = backgroundScript(configFor(22), "exit 3", "abc123abc123");
+
+    expect(script).toContain("(\nexit 3\n)");
+    expect(script).toContain("echo $? > '\\''/var/log/vmhq-mcp/abc123abc123.status'\\''");
+  });
+
+  test("uses the requested shell inside the container", () => {
+    const script = backgroundScript(configFor(22), "echo hi", "abc123abc123", "/bin/bash");
+
+    expect(script).toContain("setsid /bin/bash -c ");
+    expect(script).toContain("nohup /bin/bash -c ");
+  });
+
+  test("parses a finished job and splits the log from the header", () => {
+    const output = ["state=finished", "exitCode=7", "logBytes=      16", "---vmhq-job-log---", "start", "done", ""].join("\n");
+
+    expect(parseJobStatus("abc123abc123", output)).toEqual({
+      jobId: "abc123abc123",
+      state: "finished",
+      exitCode: 7,
+      logBytes: 16,
+      log: "start\ndone\n",
+    });
+  });
+
+  test("parses a running job and an unrecognised one", () => {
+    const running = parseJobStatus("abc123abc123", ["state=running", "pid=4242", "logBytes=3", "---vmhq-job-log---", "hi"].join("\n"));
+    expect(running).toMatchObject({ state: "running", pid: 4242, log: "hi" });
+    expect(running.exitCode).toBeUndefined();
+
+    expect(parseJobStatus("abc123abc123", "sudo: a password is required")).toMatchObject({ state: "not_found", log: "" });
+  });
+
+  test("prunes only job files, and only past the retention window", () => {
+    const purge = jobPurgeCommand(configFor(22, { jobDir: "/var/log/vmhq-mcp/" }));
+
+    expect(purge).toContain("find '/var/log/vmhq-mcp' -maxdepth 1 -type f");
+    expect(purge).toContain(String.raw`\( -name '*.log' -o -name '*.pid' -o -name '*.status' \)`);
+    expect(purge).toContain("-mtime +30");
+    // A failed prune must never take the launch down with it.
+    expect(purge).toContain("|| true");
+  });
+
+  test("skips pruning when retention is disabled", () => {
+    expect(jobPurgeCommand(configFor(22, { jobRetentionDays: 0 }))).toBeUndefined();
+    expect(jobPurgeCommand(configFor(22, { jobRetentionDays: -1 }))).toBeUndefined();
+    expect(backgroundScript(configFor(22, { jobRetentionDays: 0 }), "echo hi", "abc123abc123")).not.toContain("find ");
+  });
+
+  test("launching a job prunes stale files and leaves recent ones alone", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/vmhq-jobs-`);
+    const config = configFor(22, { jobDir: dir });
+    const ancient = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+
+    for (const name of ["old.log", "old.pid", "old.status"]) {
+      writeFileSync(`${dir}/${name}`, "stale");
+      utimesSync(`${dir}/${name}`, ancient, ancient);
+    }
+    // Not a job file, and an old one: the prune must not touch it.
+    writeFileSync(`${dir}/keep.txt`, "unrelated");
+    utimesSync(`${dir}/keep.txt`, ancient, ancient);
+    writeFileSync(`${dir}/recent.log`, "fresh");
+
+    const jobId = newJobId();
+    const proc = Bun.spawn(["/bin/sh", "-c", backgroundScript(config, "true", jobId)], { stdout: "ignore", stderr: "ignore" });
+    await proc.exited;
+
+    try {
+      const left = readdirSync(dir).sort();
+      expect(left).not.toContain("old.log");
+      expect(left).not.toContain("old.pid");
+      expect(left).not.toContain("old.status");
+      expect(left).toContain("keep.txt");
+      expect(left).toContain("recent.log");
+      expect(left).toContain(`${jobId}.log`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The scripts are only ever run by a remote shell, so this executes them
+   * locally end to end: it is what caught `exit` in the command aborting the
+   * wrapper before it could record the job's exit code.
+   */
+  test("runs, reports and finishes a real job under /bin/sh", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/vmhq-jobs-`);
+    const config = configFor(22, { jobDir: dir });
+    const jobId = newJobId();
+
+    async function sh(script: string): Promise<string> {
+      const proc = Bun.spawn(["/bin/sh", "-c", script], { stdout: "pipe", stderr: "ignore" });
+      const output = await new Response(proc.stdout).text();
+      await proc.exited;
+      return output;
+    }
+
+    try {
+      const command = `printf "it's running\\n"; sleep 1; printf 'done\\n'; exit 7`;
+      await sh(backgroundScript(config, command, jobId));
+
+      // Checked with no delay on purpose: a job must never read as missing
+      // between the launcher returning and the wrapper recording its pid.
+      const started = parseJobStatus(jobId, await sh(jobStatusScript(config, jobId)));
+      expect(["starting", "running"]).toContain(started.state);
+
+      let finished = started;
+      for (let attempt = 0; attempt < 40 && finished.state !== "finished"; attempt += 1) {
+        await Bun.sleep(100);
+        finished = parseJobStatus(jobId, await sh(jobStatusScript(config, jobId)));
+      }
+
+      expect(finished.state).toBe("finished");
+      expect(finished.exitCode).toBe(7);
+      expect(finished.log).toBe("it's running\ndone\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
