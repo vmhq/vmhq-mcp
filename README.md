@@ -127,8 +127,8 @@ PROXMOX_TOKEN_SECRET=
 # PROXMOX_INSECURE_TLS=true
 
 # Proxmox SSH (shell access for a maintainer agent)
-# Setting PROXMOX_SSH_HOST registers proxmox_lxc_list, proxmox_lxc_exec and
-# proxmox_node_exec. The Proxmox REST API has no exec endpoint for LXC, so
+# Setting PROXMOX_SSH_HOST registers proxmox_lxc_list, proxmox_lxc_exec,
+# proxmox_node_exec and proxmox_job_status. The Proxmox REST API has no exec endpoint for LXC, so
 # running commands inside a container means SSH + pct exec on the node.
 # WARNING: these tools are an unrestricted shell on the hypervisor. Whoever can
 # call /mcp can run anything the SSH user can run. Scope the SSH credential
@@ -153,6 +153,9 @@ PROXMOX_TOKEN_SECRET=
 # Per-command timeout and output cap. Defaults: 120000 ms and 30000 characters.
 # PROXMOX_SSH_TIMEOUT_MS=120000
 # PROXMOX_SSH_MAX_OUTPUT=30000
+# Where background jobs (background: true) keep their log, pid and status files,
+# on the node or inside the container. Default: /var/log/vmhq-mcp
+# PROXMOX_SSH_JOB_DIR=/var/log/vmhq-mcp
 
 # Optional auth/header overrides
 MINIFLUX_AUTH_MODE=x-auth-token
@@ -252,7 +255,7 @@ For each service:
 - `karakeep_api_reference`, `karakeep_operation`, `karakeep_request`
 - `searxng_api_reference`, `searxng_operation`, `searxng_request`
 - `proxmox_api_reference`, `proxmox_operation`, `proxmox_request`
-- `proxmox_lxc_list`, `proxmox_lxc_exec`, `proxmox_node_exec` — SSH shell tools (enabled by `PROXMOX_SSH_HOST`)
+- `proxmox_lxc_list`, `proxmox_lxc_exec`, `proxmox_node_exec`, `proxmox_job_status` — SSH shell tools (enabled by `PROXMOX_SSH_HOST`)
 - `memos_api_reference`, `memos_operation`, `memos_request`
 - `adguard_api_reference`, `adguard_operation`, `adguard_request`
 
@@ -290,11 +293,12 @@ Example with path parameters:
 
 ## Proxmox SSH
 
-The Proxmox REST API has no exec endpoint for LXC containers — only QEMU guests expose one, through the guest agent. Running a command inside a container therefore means SSHing into the node and calling `pct exec`. Setting `PROXMOX_SSH_HOST` enables three tools for that:
+The Proxmox REST API has no exec endpoint for LXC containers — only QEMU guests expose one, through the guest agent. Running a command inside a container therefore means SSHing into the node and calling `pct exec`. Setting `PROXMOX_SSH_HOST` enables four tools for that:
 
 - `proxmox_lxc_list` — runs `pct list` and returns the containers as JSON (`vmid`, `status`, `lock`, `name`).
 - `proxmox_lxc_exec` — runs a shell command inside a container: `pct exec <vmid> -- /bin/sh -c '<command>'`.
 - `proxmox_node_exec` — runs a shell command on the node itself (`pveversion`, `systemctl`, `journalctl`, `apt`, `zfs`, …).
+- `proxmox_job_status` — reports a background job started by either exec tool.
 
 Both exec tools take a full command string interpreted by a remote shell, so pipes, redirects, `&&` and heredocs work as typed. They also accept `stdin` (handy for writing files with `tee`), a per-call `timeoutMs`, and `maxLength` to cap output. Non-zero exit codes come back as a normal result with `exitCode`, `stdout` and `stderr`; only transport problems (timeout, auth, host key, connection) are returned as errors.
 
@@ -304,6 +308,29 @@ Both exec tools take a full command string interpreted by a remote shell, so pip
   "command": "systemctl restart nginx && systemctl is-active nginx"
 }
 ```
+
+### Long-running commands
+
+The real limit on a long command is not `PROXMOX_SSH_TIMEOUT_MS` but the MCP client, which gives up on a tool call long before a raised `timeoutMs` would. So both exec tools take `background: true` instead: the command is detached from the SSH session with `setsid` (falling back to `nohup`), the call returns immediately with a `jobId`, and the job keeps running on the target with its output going to `<PROXMOX_SSH_JOB_DIR>/<jobId>.log`.
+
+```json
+{
+  "command": "apt-get update && apt-get -y dist-upgrade",
+  "background": true
+}
+```
+
+`proxmox_job_status` then reports the job and the tail of its log, with `vmid` when the job was started inside a container:
+
+| state | meaning |
+|-------|---------|
+| `starting` | launched, has not recorded its pid yet |
+| `running` | the job process is alive |
+| `finished` | done, with its `exitCode` |
+| `orphaned` | the process is gone but never recorded an exit code (node rebooted, OOM killer, a command the shell could not parse) |
+| `not_found` | no such job in the job directory |
+
+The command runs in a subshell, so an `exit` inside it ends the job without stopping the wrapper from recording the exit code. Logs are not cleaned up automatically: a finished job can still be read later, and the files are plain text under `PROXMOX_SSH_JOB_DIR` if you want to prune them.
 
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 

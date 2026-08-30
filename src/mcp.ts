@@ -5,9 +5,15 @@ import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCa
 import { callService, interpolatePath } from "./serviceClient.js";
 import {
   assertVmidAllowed,
+  backgroundScript,
   isSshFailure,
+  jobPaths,
+  jobStatusScript,
+  JOB_ID_PATTERN,
   lxcCommand,
+  newJobId,
   nodeCommand,
+  parseJobStatus,
   parsePctList,
   runSshCommand,
   type ProxmoxSshConfig,
@@ -217,7 +223,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
               proxmoxSsh: {
                 host: proxmoxSsh.host,
                 user: proxmoxSsh.user,
-                tools: ["proxmox_lxc_list", "proxmox_lxc_exec", "proxmox_node_exec"],
+                tools: ["proxmox_lxc_list", "proxmox_lxc_exec", "proxmox_node_exec", "proxmox_job_status"],
                 ...(proxmoxSsh.allowedVmids ? { allowedVmids: proxmoxSsh.allowedVmids } : {}),
               },
             }
@@ -369,7 +375,8 @@ function registerHomeAssistantPinnedTool(server: McpServer, service: ServiceDefi
 
 const sshExecFields = {
   stdin: z.string().optional().describe("Optional text piped to the command's stdin. Useful for writing files, e.g. command \"tee /etc/motd\" with the file contents as stdin."),
-  timeoutMs: z.number().optional().describe("Optional override for this command's timeout in milliseconds. Raise it for long maintenance runs such as apt upgrade."),
+  timeoutMs: z.number().optional().describe("Optional override for this command's timeout in milliseconds. For anything that may run for minutes prefer background: true, because the MCP client gives up long before a raised timeout does."),
+  background: z.boolean().optional().describe("Run the command detached and return immediately with a jobId. Use it for long maintenance runs (apt upgrade, rsync, builds): the command keeps running on the target even after this call returns, writing stdout and stderr to a log file, and proxmox_job_status reports its progress and final exit code."),
   maxLength: z.number().optional().describe("Optional maximum length in characters for stdout and stderr. Longer output is truncated and the dropped character count is reported."),
 };
 
@@ -382,6 +389,59 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
   const allowlistNote = ssh.allowedVmids
     ? ` Only these container IDs are reachable: ${ssh.allowedVmids.join(", ")}.`
     : "";
+
+  const backgroundNote =
+    " For anything that can run for minutes (apt upgrade, rsync, a build) pass background: true instead of raising timeoutMs: the command is detached, this call returns a jobId immediately, and proxmox_job_status reports progress and the final exit code.";
+
+  /**
+   * Launches a detached job and reports where its output landed. The launcher
+   * itself returns as soon as the job is spawned, so it uses the normal command
+   * timeout no matter how long the job will actually run.
+   */
+  async function launchBackgroundJob(
+    vmid: number | undefined,
+    command: string,
+    options: { shell?: string; stdin?: string; timeoutMs?: number; maxLength?: number },
+  ) {
+    // A detached job reads from /dev/null, so honouring stdin here would be a
+    // lie. Say so instead of dropping the input silently.
+    if (options.stdin !== undefined) {
+      return errorResult({
+        error: {
+          type: "invalid_request",
+          service: "proxmox_ssh",
+          message: "stdin is not supported for background jobs. Write the input to a file first (a foreground exec with stdin), then run the background command against that file.",
+          retryable: false,
+        },
+      });
+    }
+
+    const jobId = newJobId();
+    const target = vmid === undefined ? "node" : `lxc:${vmid}`;
+    const script = backgroundScript(ssh, command, jobId, vmid === undefined ? undefined : options.shell || ssh.containerShell);
+    const wrapped = vmid === undefined ? nodeCommand(ssh, script) : lxcCommand(ssh, vmid, script, options.shell);
+    const result = await runSshCommand(ssh, wrapped, { timeoutMs: options.timeoutMs, target, requestId });
+
+    if (isSshFailure(result) || !result.ok) {
+      return errorResult(result, options.maxLength);
+    }
+
+    const paths = jobPaths(ssh, jobId);
+
+    return textResult(
+      {
+        mode: "background",
+        jobId,
+        host: ssh.host,
+        target,
+        command,
+        logPath: paths.logPath,
+        statusPath: paths.statusPath,
+        hint: `The job is running detached on ${target}. Check it with proxmox_job_status jobId ${jobId}${vmid === undefined ? "" : ` vmid ${vmid}`}.`,
+      },
+      options.maxLength,
+    );
+  }
 
   server.tool(
     "proxmox_lxc_list",
@@ -410,7 +470,7 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
 
   server.tool(
     "proxmox_lxc_exec",
-    `Run a shell command inside an LXC container on ${ssh.host}, via pct exec over SSH. The command string is interpreted by ${ssh.containerShell} inside the container, so pipes, redirects, && and heredocs all work. The container must be running. Use proxmox_lxc_list to find VMIDs. This is a real root shell inside the container: it can install packages, edit configuration and restart services. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive).${allowlistNote}`,
+    `Run a shell command inside an LXC container on ${ssh.host}, via pct exec over SSH. The command string is interpreted by ${ssh.containerShell} inside the container, so pipes, redirects, && and heredocs all work. The container must be running. Use proxmox_lxc_list to find VMIDs. This is a real root shell inside the container: it can install packages, edit configuration and restart services. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive).${backgroundNote}${allowlistNote}`,
     {
       vmid: z.number().int().positive().describe("Container ID (VMID), for example 101."),
       command: z.string().min(1).describe("Shell command to run inside the container, for example: systemctl restart nginx"),
@@ -418,10 +478,14 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
       ...sshExecFields,
     },
     { title: "Proxmox LXC Exec", destructiveHint: true, openWorldHint: true },
-    async ({ vmid, command, shell, stdin, timeoutMs, maxLength }: { vmid: number; command: string; shell?: string; stdin?: string; timeoutMs?: number; maxLength?: number }) => {
+    async ({ vmid, command, shell, stdin, timeoutMs, maxLength, background }: { vmid: number; command: string; shell?: string; stdin?: string; timeoutMs?: number; maxLength?: number; background?: boolean }) => {
       const rejection = assertVmidAllowed(ssh, vmid);
       if (rejection) {
         return errorResult({ error: { type: "invalid_request", service: "proxmox_ssh", message: rejection, retryable: false } });
+      }
+
+      if (background) {
+        return launchBackgroundJob(vmid, command, { shell, stdin, timeoutMs, maxLength });
       }
 
       const result = await runSshCommand(ssh, lxcCommand(ssh, vmid, command, shell), {
@@ -438,13 +502,17 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
 
   server.tool(
     "proxmox_node_exec",
-    `Run a shell command on the Proxmox node ${ssh.host} itself, over SSH. The command string is interpreted by the node shell, so pipes, redirects, && and heredocs all work. Use this to maintain the hypervisor: pct/qm lifecycle commands, pveversion, journalctl, systemctl, apt, zfs/lvm, /etc/pve configuration. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive). To run something inside a container, prefer proxmox_lxc_exec.`,
+    `Run a shell command on the Proxmox node ${ssh.host} itself, over SSH. The command string is interpreted by the node shell, so pipes, redirects, && and heredocs all work. Use this to maintain the hypervisor: pct/qm lifecycle commands, pveversion, journalctl, systemctl, apt, zfs/lvm, /etc/pve configuration. There is no TTY, so commands must be non-interactive (apt-get -y, DEBIAN_FRONTEND=noninteractive). To run something inside a container, prefer proxmox_lxc_exec.${backgroundNote}`,
     {
       command: z.string().min(1).describe("Shell command to run on the node, for example: pveversion -v"),
       ...sshExecFields,
     },
     { title: "Proxmox Node Exec", destructiveHint: true, openWorldHint: true },
-    async ({ command, stdin, timeoutMs, maxLength }: { command: string; stdin?: string; timeoutMs?: number; maxLength?: number }) => {
+    async ({ command, stdin, timeoutMs, maxLength, background }: { command: string; stdin?: string; timeoutMs?: number; maxLength?: number; background?: boolean }) => {
+      if (background) {
+        return launchBackgroundJob(undefined, command, { stdin, timeoutMs, maxLength });
+      }
+
       const result = await runSshCommand(ssh, nodeCommand(ssh, command), {
         stdin,
         timeoutMs,
@@ -454,6 +522,47 @@ function registerProxmoxSshTools(server: McpServer, ssh: ProxmoxSshConfig, reque
       });
 
       return isSshFailure(result) ? errorResult(result, maxLength) : textResult(result, maxLength);
+    },
+  );
+
+  server.tool(
+    "proxmox_job_status",
+    `Report the state of a background job started with background: true, together with the tail of its log. States: starting, running, finished (with its exit code), orphaned (the process is gone but never recorded an exit code, e.g. the node rebooted or the OOM killer stepped in) and not_found. Jobs keep their log in ${ssh.jobDir} on the target, so a finished job can still be inspected later.`,
+    {
+      jobId: z.string().min(1).describe("Job ID returned by proxmox_node_exec or proxmox_lxc_exec when called with background: true."),
+      vmid: z.number().int().positive().optional().describe("Container the job was started in. Omit for jobs started with proxmox_node_exec."),
+      tailLines: z.number().int().positive().optional().describe("How many trailing log lines to return. Defaults to 200."),
+      maxLength: z.number().optional().describe("Optional maximum length in characters for the response."),
+    },
+    { title: "Proxmox Job Status", readOnlyHint: true },
+    async ({ jobId, vmid, tailLines, maxLength }: { jobId: string; vmid?: number; tailLines?: number; maxLength?: number }) => {
+      // The job ID lands in a shell path, so only IDs this server minted are
+      // accepted: anything else could climb out of the job directory.
+      if (!JOB_ID_PATTERN.test(jobId)) {
+        return errorResult({
+          error: { type: "invalid_request", service: "proxmox_ssh", message: "jobId must be a 12-character job ID returned by a background exec.", retryable: false },
+        });
+      }
+
+      if (vmid !== undefined) {
+        const rejection = assertVmidAllowed(ssh, vmid);
+        if (rejection) {
+          return errorResult({ error: { type: "invalid_request", service: "proxmox_ssh", message: rejection, retryable: false } });
+        }
+      }
+
+      const script = jobStatusScript(ssh, jobId, tailLines ?? 200);
+      const target = vmid === undefined ? "node" : `lxc:${vmid}`;
+      const wrapped = vmid === undefined ? nodeCommand(ssh, script) : lxcCommand(ssh, vmid, script);
+      const result = await runSshCommand(ssh, wrapped, { maxOutputChars: maxLength, target, requestId });
+
+      if (isSshFailure(result)) {
+        return errorResult(result, maxLength);
+      }
+
+      const status = parseJobStatus(jobId, result.stdout);
+
+      return textResult({ host: ssh.host, target, ...status, ...jobPaths(ssh, jobId) }, maxLength);
     },
   );
 }

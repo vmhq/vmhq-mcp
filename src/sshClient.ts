@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { Client } from "ssh2";
@@ -28,6 +28,8 @@ export type ProxmoxSshConfig = {
   sudo: boolean;
   /** Shell used to interpret commands inside containers. */
   containerShell: string;
+  /** Directory where background jobs write their log, pid and status files. */
+  jobDir: string;
 };
 
 export type SshErrorType =
@@ -388,4 +390,127 @@ export function parsePctList(output: string): LxcListEntry[] {
       },
     ];
   });
+}
+
+/**
+ * Background jobs. The real ceiling on a long command is not this server's
+ * timeout but the MCP client's: raising `timeoutMs` only moves the disconnect.
+ * So the command is detached from the SSH session instead, writes its output to
+ * a log file on the target and records its exit code when it ends, and a later
+ * call reads the result without anyone holding a connection open.
+ */
+const JOB_LOG_MARKER = "---vmhq-job-log---";
+
+export const JOB_ID_PATTERN = /^[0-9a-f]{12}$/u;
+
+export function newJobId(): string {
+  return randomBytes(6).toString("hex");
+}
+
+export type JobPaths = { dir: string; logPath: string; statusPath: string; pidPath: string };
+
+export function jobPaths(config: ProxmoxSshConfig, jobId: string): JobPaths {
+  const dir = config.jobDir.replace(/\/+$/u, "");
+  return {
+    dir,
+    logPath: `${dir}/${jobId}.log`,
+    statusPath: `${dir}/${jobId}.status`,
+    pidPath: `${dir}/${jobId}.pid`,
+  };
+}
+
+/**
+ * Builds the script that launches `command` detached. The wrapper records its
+ * own pid before starting, so a later status check can tell "still running"
+ * from "died without writing an exit code" (node rebooted, OOM killer, ...).
+ */
+export function backgroundScript(config: ProxmoxSshConfig, command: string, jobId: string, shell?: string): string {
+  const paths = jobPaths(config, jobId);
+  const runner = shell || "/bin/sh";
+  // The command runs in a subshell so that an `exit` inside it ends the job
+  // rather than the wrapper, which still has to record the exit code.
+  const wrapper = [
+    `echo $$ > ${shellQuote(paths.pidPath)}`,
+    "(",
+    command,
+    `) > ${shellQuote(paths.logPath)} 2>&1`,
+    `echo $? > ${shellQuote(paths.statusPath)}`,
+  ].join("\n");
+  const quotedWrapper = shellQuote(wrapper);
+  // setsid detaches the job from the SSH session's process group entirely;
+  // nohup is the fallback for minimal containers that ship without it.
+  const detach = `${runner} -c ${quotedWrapper} < /dev/null > /dev/null 2>&1 &`;
+
+  return [
+    `mkdir -p ${shellQuote(paths.dir)} || exit 1`,
+    // Creating the log here makes the job observable before the wrapper has
+    // had a chance to record its pid, so an immediate status check reads
+    // "starting" instead of "no such job".
+    `: > ${shellQuote(paths.logPath)} || exit 1`,
+    "if command -v setsid > /dev/null 2>&1; then",
+    `setsid ${detach}`,
+    "else",
+    `nohup ${detach}`,
+    "fi",
+    `echo ${shellQuote(jobId)}`,
+  ].join("\n");
+}
+
+/** Builds the script that reports a job's state and the tail of its log. */
+export function jobStatusScript(config: ProxmoxSshConfig, jobId: string, tailLines = 200): string {
+  const paths = jobPaths(config, jobId);
+  const status = shellQuote(paths.statusPath);
+  const pid = shellQuote(paths.pidPath);
+  const logPath = shellQuote(paths.logPath);
+  const lines = Math.max(1, Math.trunc(tailLines));
+
+  return [
+    `if [ -e ${status} ]; then echo "state=finished"; echo "exitCode=$(cat ${status})";`,
+    `elif [ -e ${pid} ] && kill -0 "$(cat ${pid})" 2> /dev/null; then echo "state=running"; echo "pid=$(cat ${pid})";`,
+    `elif [ -e ${pid} ]; then echo "state=orphaned";`,
+    `elif [ -e ${logPath} ]; then echo "state=starting";`,
+    `else echo "state=not_found"; fi`,
+    `echo "logBytes=$(wc -c < ${logPath} 2> /dev/null || echo 0)"`,
+    `echo ${shellQuote(JOB_LOG_MARKER)}`,
+    `tail -n ${lines} ${logPath} 2> /dev/null || true`,
+  ].join("\n");
+}
+
+export type JobState = "starting" | "running" | "finished" | "orphaned" | "not_found";
+
+export type JobStatus = {
+  jobId: string;
+  state: JobState;
+  exitCode?: number;
+  pid?: number;
+  logBytes?: number;
+  log: string;
+};
+
+const JOB_STATES: JobState[] = ["starting", "running", "finished", "orphaned", "not_found"];
+
+export function parseJobStatus(jobId: string, output: string): JobStatus {
+  const markerAt = output.indexOf(`${JOB_LOG_MARKER}\n`);
+  const header = markerAt === -1 ? output : output.slice(0, markerAt);
+  const log = markerAt === -1 ? "" : output.slice(markerAt + JOB_LOG_MARKER.length + 1);
+
+  const fields = new Map<string, string>();
+  for (const line of header.split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator > 0) fields.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+  }
+
+  const state = fields.get("state") ?? "";
+  const exitCode = Number(fields.get("exitCode"));
+  const pid = Number(fields.get("pid"));
+  const logBytes = Number(fields.get("logBytes"));
+
+  return {
+    jobId,
+    state: (JOB_STATES as string[]).includes(state) ? (state as JobState) : "not_found",
+    ...(Number.isInteger(exitCode) && fields.has("exitCode") ? { exitCode } : {}),
+    ...(Number.isInteger(pid) && fields.has("pid") ? { pid } : {}),
+    ...(Number.isInteger(logBytes) ? { logBytes } : {}),
+    log,
+  };
 }
