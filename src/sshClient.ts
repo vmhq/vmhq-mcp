@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { Client } from "ssh2";
 import { log } from "./logger.js";
+import { knownHostKey, rememberHostKey } from "./sshKnownHosts.js";
 
 /**
  * SSH access to the Proxmox node. Unlike every other upstream in this server,
@@ -133,6 +134,49 @@ function resolveShell(fallback: string, shell?: string): string {
   return candidate;
 }
 
+/**
+ * Patterns whose value is replaced before a command reaches the logs. Commands
+ * are logged so the audit trail says what was run, but a maintenance one-liner
+ * routinely carries a secret on its argv (`mysql -pSECRET`, `curl -H "Authorization: …"`).
+ *
+ * This is a reduction in exposure, not a guarantee: a secret in a shape not
+ * listed here still gets through. Prefer passing secrets on stdin, which is
+ * never logged.
+ */
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  // A value is a quoted string or a run of non-space, non-quote characters.
+  // Excluding quotes matters: a matcher that swallowed the closing quote left
+  // the rest of the command open to the next pattern, which then ate it.
+  [/((?:password|passwd|pwd|token|secret|api[-_]?key|access[-_]?key)\s*[=:]\s*)(?!\*\*\*)(?:"[^"]*"|'[^']*'|[^\s'"]+)/giu, "$1***"],
+  [/(-p)(?!\s)(?!\*\*\*)(?:"[^"]*"|'[^']*'|[^\s'"]+)/gu, "$1***"],
+  // A header value runs to the closing quote, not to the next space: matching
+  // one token here left "Authorization: Bearer <token>" with the token in the
+  // log line. The lookahead keeps it off a value an earlier pattern redacted.
+  [/((?:authorization|x-auth-token|x-api-key)\s*:\s*)(?!\*\*\*)[^'"\n;&|]+/giu, "$1***"],
+  [/(\bBearer\s+)(?!\*\*\*)[^\s'"]+/giu, "$1***"],
+];
+
+/** How much of a command survives into a log line. */
+const MAX_LOGGED_COMMAND_CHARS = 200;
+
+/**
+ * Renders a command for logging: known secret shapes redacted, then truncated.
+ * The audit trail added alongside `actor` is the reason the command is still
+ * logged at all, so this trims what is written rather than dropping it.
+ */
+export function redactCommand(command: string, maxChars = MAX_LOGGED_COMMAND_CHARS): string {
+  let redacted = command;
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, replacement);
+  }
+
+  if (redacted.length <= maxChars) {
+    return redacted;
+  }
+
+  return `${redacted.slice(0, maxChars)}… [${redacted.length - maxChars} more characters]`;
+}
+
 /** OpenSSH-style fingerprint of a raw public host key blob. */
 export function hostKeyFingerprint(key: Buffer): string {
   return `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/u, "")}`;
@@ -252,7 +296,7 @@ export async function runSshCommand(
     actor: options.actor,
     host: config.host,
     target,
-    command,
+    command: redactCommand(command),
   });
 
   const result = await new Promise<SshExecResult>((resolve) => {
@@ -262,6 +306,8 @@ export async function runSshCommand(
     let exitCode: number | null = null;
     let exitSignal: string | undefined;
     let actualFingerprint = "";
+    /** Set when a previously pinned key did not match, for the error message. */
+    let expectedFingerprint = "";
     let settled = false;
 
     const timer = setTimeout(() => {
@@ -283,6 +329,18 @@ export async function runSshCommand(
             "ssh_host_key_mismatch",
             `Host key for ${config.host} is ${actualFingerprint}, expected ${normalizeFingerprint(config.hostFingerprint)}. ` +
               "Refusing to connect; update PROXMOX_SSH_HOST_FINGERPRINT only if you know why the key changed.",
+          ),
+        );
+        return;
+      }
+
+      if (expectedFingerprint && actualFingerprint !== expectedFingerprint) {
+        settle(
+          sshError(
+            "ssh_host_key_mismatch",
+            `Host key for ${config.host} is ${actualFingerprint}, but ${expectedFingerprint} was pinned on the first connection. ` +
+              "Refusing to connect. If the node's key changed for a reason you know about, remove its entry from " +
+              "PROXMOX_SSH_KNOWN_HOSTS_PATH (default ./data/proxmox-known-hosts.json) so it can be pinned again.",
           ),
         );
         return;
@@ -342,8 +400,23 @@ export async function runSshCommand(
       keepaliveInterval: 10_000,
       hostVerifier: (key: Buffer) => {
         actualFingerprint = hostKeyFingerprint(key);
-        if (!config.hostFingerprint) return true;
-        return actualFingerprint === normalizeFingerprint(config.hostFingerprint);
+
+        // An explicitly configured fingerprint is the strongest statement the
+        // operator can make, so it decides on its own.
+        if (config.hostFingerprint) {
+          return actualFingerprint === normalizeFingerprint(config.hostFingerprint);
+        }
+
+        // Otherwise trust on first use: pin whatever answered the first time
+        // and require it from then on, rather than accepting any key forever.
+        const pinned = knownHostKey(config.host, config.port);
+        if (!pinned) {
+          rememberHostKey(config.host, config.port, actualFingerprint);
+          return true;
+        }
+
+        expectedFingerprint = pinned;
+        return actualFingerprint === pinned;
       },
     });
   });
@@ -355,7 +428,7 @@ export async function runSshCommand(
       actor: options.actor,
       host: config.host,
       target,
-      command,
+      command: redactCommand(command),
       durationMs: Math.round(performance.now() - startedAt),
       error: result.error.type,
     });
@@ -368,7 +441,7 @@ export async function runSshCommand(
     actor: options.actor,
     host: config.host,
     target,
-    command,
+    command: redactCommand(command),
     exitCode: result.exitCode,
     durationMs: result.durationMs,
   });

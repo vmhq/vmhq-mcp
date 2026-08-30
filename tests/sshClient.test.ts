@@ -1,7 +1,7 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { Server, utils, type Connection } from "ssh2";
-import { mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   assertShellAllowed,
@@ -19,6 +19,7 @@ import {
   nodeCommand,
   isAllowedShell,
   parsePctList,
+  redactCommand,
   runSshCommand,
   shellQuote,
   type ProxmoxSshConfig,
@@ -41,7 +42,7 @@ type ExecHandler = (context: { command: string; stdin: string; write: (text: str
 type TestServer = { port: number; close: () => void };
 
 /** Boots an in-process SSH server so exec behaviour is exercised end to end. */
-async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean } = {}): Promise<TestServer> {
+async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean; port?: number } = {}): Promise<TestServer> {
   const server = new Server({ hostKeys: [hostKeyPem] }, (client: Connection) => {
     // The host-key tests make the client disconnect mid-handshake, which the
     // server reports as KEY_EXCHANGE_FAILED. Without a listener ssh2 rethrows
@@ -75,7 +76,9 @@ async function startServer(options: { onExec?: ExecHandler; rejectAuth?: boolean
 
   server.on("error", () => {});
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  // A fixed port lets a test restart "the same host" and check that a pinned
+  // key is still accepted.
+  await new Promise<void>((resolve) => server.listen(options.port ?? 0, "127.0.0.1", () => resolve()));
   const port = (server.address() as { port: number }).port;
 
   return { port, close: () => server.close() };
@@ -545,4 +548,163 @@ describe("background jobs", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 10_000);
+});
+
+/**
+ * Commands are logged so the audit trail says what was run, but maintenance
+ * one-liners routinely carry a secret on their argv. Redaction trims what is
+ * written without giving up the trail.
+ */
+describe("redactCommand", () => {
+  test("redacts the shapes a secret usually arrives in", () => {
+    // [command, the secret that must not survive]
+    const cases: Array<[string, string]> = [
+      ["mysql -pSuperSecret123 -e 'show databases'", "SuperSecret123"],
+      ["curl -H 'Authorization: Bearer abc.def.ghi' https://api", "abc.def.ghi"],
+      ["export DB_PASSWORD=hunter2 && migrate", "hunter2"],
+      ["run --token=ghp_aaaabbbbcccc", "ghp_aaaabbbbcccc"],
+      ["setup api_key: 'sk-live-1234'", "sk-live-1234"],
+      ["curl -H 'X-Auth-Token: minifluxsecret' http://rss", "minifluxsecret"],
+      ['deploy --secret="p@ss w0rd"', "p@ss w0rd"],
+    ];
+    for (const [command, secret] of cases) {
+      const redacted = redactCommand(command);
+      expect(redacted).not.toContain(secret);
+      expect(redacted).toContain("***");
+    }
+  });
+
+  test("keeps the surrounding command readable instead of eating the rest of the line", () => {
+    // Chained patterns used to swallow everything after a redacted value,
+    // which costs exactly the audit information the log exists for.
+    const redacted = redactCommand("curl -H 'X-Auth-Token: minifluxsecret' http://rss/v1/me");
+    expect(redacted).toContain("curl -H");
+    expect(redacted).toContain("http://rss/v1/me");
+  });
+
+  test("the secret value itself is gone, not merely masked alongside", () => {
+    const redacted = redactCommand("mysql -pSuperSecret123 && curl -H 'Authorization: Bearer abc.def'");
+    expect(redacted).not.toContain("SuperSecret123");
+    expect(redacted).not.toContain("abc.def");
+  });
+
+  test("leaves an ordinary maintenance command untouched", () => {
+    const command = "systemctl restart nginx && journalctl -u nginx -n 50";
+    expect(redactCommand(command)).toBe(command);
+  });
+
+  test("truncates a long command and says how much was dropped", () => {
+    const redacted = redactCommand("echo " + "x".repeat(500), 200);
+    expect(redacted.length).toBeLessThan(260);
+    expect(redacted).toContain("more characters]");
+  });
+
+  test("redacts before truncating, so a secret past the cutoff cannot survive", () => {
+    const redacted = redactCommand(`${"echo padding; ".repeat(30)}mysql -pLATE_SECRET`, 5_000);
+    expect(redacted).not.toContain("LATE_SECRET");
+  });
+});
+
+/**
+ * PROXMOX_SSH_HOST_FINGERPRINT is only required for a public node, so a node on
+ * a private network used to be reached with no host verification at all — the
+ * connection carrying a root shell accepted whatever key answered. Trust on
+ * first use closes that without making the operator run ssh-keyscan before the
+ * server will start.
+ */
+describe("host key trust on first use", () => {
+  let dir: string;
+  const originalPath = process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH;
+
+  beforeEach(() => {
+    dir = mkdtempSync(`${tmpdir()}/vmhq-knownhosts-`);
+    process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH = `${dir}/known-hosts.json`;
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    if (originalPath === undefined) delete process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH;
+    else process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH = originalPath;
+  });
+
+  function storeContents(): Record<string, { fingerprint: string }> {
+    return JSON.parse(readFileSync(`${dir}/known-hosts.json`, "utf-8")) as Record<string, { fingerprint: string }>;
+  }
+
+  function seedStore(host: string, port: number, fingerprint: string): void {
+    writeFileSync(
+      `${dir}/known-hosts.json`,
+      JSON.stringify({ [`${host}:${port}`]: { fingerprint, firstSeenAt: new Date().toISOString() } }),
+    );
+  }
+
+  test("the first connection pins the key it saw", async () => {
+    const server = await startServer({ onExec: ({ write, exit }) => (write("ok"), exit(0)) });
+    const result = await runSshCommand(configFor(server.port), "true");
+    server.close();
+
+    if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
+    expect(storeContents()[`127.0.0.1:${server.port}`]?.fingerprint).toBe(expectedFingerprint);
+  });
+
+  test("the store is written 0600, like the OAuth state file", async () => {
+    const server = await startServer({ onExec: ({ exit }) => exit(0) });
+    await runSshCommand(configFor(server.port), "true");
+    server.close();
+
+    expect(statSync(`${dir}/known-hosts.json`).mode & 0o777).toBe(0o600);
+  });
+
+  test("a later connection with the same key still works", async () => {
+    const first = await startServer({ onExec: ({ write, exit }) => (write("one"), exit(0)) });
+    await runSshCommand(configFor(first.port), "true");
+    first.close();
+
+    // Same host key, same port: this is the ordinary case, and it must not
+    // start failing just because the key is now pinned.
+    const second = await startServer({ onExec: ({ write, exit }) => (write("two"), exit(0)), port: first.port });
+    const result = await runSshCommand(configFor(first.port), "true");
+    second.close();
+
+    if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
+    expect(result.stdout).toBe("two");
+  });
+
+  test("a changed host key is refused, and the error says how to accept it", async () => {
+    const server = await startServer({ onExec: ({ exit }) => exit(0) });
+    seedStore("127.0.0.1", server.port, "SHA256:a-key-from-before");
+
+    const result = await runSshCommand(configFor(server.port), "true");
+    server.close();
+
+    if (!isSshFailure(result)) throw new Error("expected a host key failure");
+    expect(result.error.type).toBe("ssh_host_key_mismatch");
+    expect(result.error.message).toContain("SHA256:a-key-from-before");
+    expect(result.error.message).toContain("PROXMOX_SSH_KNOWN_HOSTS_PATH");
+  });
+
+  test("an explicit fingerprint overrides whatever was pinned", async () => {
+    const server = await startServer({ onExec: ({ write, exit }) => (write("ok"), exit(0)) });
+    seedStore("127.0.0.1", server.port, "SHA256:a-stale-pin");
+
+    const result = await runSshCommand(
+      configFor(server.port, { hostFingerprint: expectedFingerprint }),
+      "true",
+    );
+    server.close();
+
+    if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
+    expect(result.stdout).toBe("ok");
+  });
+
+  test("an unwritable store does not take the node offline", async () => {
+    // A read-only volume should mean "not pinned yet", not "cannot connect".
+    process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH = "/proc/vmhq/cannot-write.json";
+    const server = await startServer({ onExec: ({ write, exit }) => (write("ok"), exit(0)) });
+    const result = await runSshCommand(configFor(server.port), "true");
+    server.close();
+
+    if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
+    expect(result.stdout).toBe("ok");
+  });
 });

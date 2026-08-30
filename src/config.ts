@@ -112,6 +112,9 @@ export function loadProxmoxSshConfig(): ProxmoxSshConfig | undefined {
   // A single-label hostname (pve, proxmox) only resolves on the local network,
   // so treat it like the private addresses isPrivateHost() already accepts.
   const isLocalNode = isPrivateHost(host) || !host.includes(".");
+  // A public node must be pinned up front. A private one falls back to
+  // trust-on-first-use in sshKnownHosts.ts, which pins whatever key answers the
+  // first connection rather than accepting any key forever.
   if (!hostFingerprint && !isLocalNode) {
     throw new Error(
       `PROXMOX_SSH_HOST_FINGERPRINT is required for the public host ${host}. ` +
