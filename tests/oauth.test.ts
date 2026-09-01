@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey, type JWK } from "jose";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type OAuthModule = typeof import("../src/oauth.js");
@@ -335,8 +335,6 @@ describe("GET /oauth/authorize", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Sign in with PocketID");
-    // The page is unauthenticated, so it must not disclose the destination.
-    expect(html).not.toContain("client.example.com");
     const location = new URL(pocketIdUrlFromConsentPage(html));
     expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
     expect(location.searchParams.get("client_id")).toBe("mcp-client");
@@ -755,13 +753,14 @@ describe("resource indicator validation", () => {
     expect(await res.text()).toContain("resource");
   });
 
-  test("verifyAccessToken tolerates a legacy invalid resource value", async () => {
+  test("verifyAccessToken tolerates a persisted invalid resource value", async () => {
     const { accessTokens } = await import("../src/oauth/state.js");
-    const token = "legacy-bad-resource-token";
+    const token = "bad-resource-token";
     accessTokens.set(s256(token), {
-      clientId: "legacy-client",
+      clientId: "some-client",
       scopes: ["mcp"],
       resource: "not a url",
+      identity: { subject: "user-123", email: "vicente@example.com" },
       expiresAt: Date.now() + 60_000,
     });
     const info = oauth.verifyAccessToken(token);
@@ -963,7 +962,7 @@ describe("redirect destination control", () => {
     expect(await res.text()).toContain("evil.example.com");
   });
 
-  test("the consent page shows the client name and nothing else about the request", async () => {
+  test("without an allowlist the consent page names the destination and nothing else about the server", async () => {
     delete process.env[ALLOWLIST];
     const redirectUri = "https://evil.example.com/cb";
     const res = await oauth.registerClient(
@@ -988,11 +987,34 @@ describe("redirect destination control", () => {
     const html = await page.text();
 
     expect(html).toContain("Claude");
-    // Nothing about the destination, what a token reaches, or how the server
-    // is configured may leak to an unauthenticated visitor.
-    expect(html).not.toContain("evil.example.com");
+    // With no allowlist any registrant can ask for a code, so the one thing
+    // the person clicking can check is where the code will go. The host is
+    // data the registrant supplied, not a description of this server.
+    expect(html).toContain("evil.example.com");
+    // Nothing about what a token reaches, or how the server is configured,
+    // may leak to an unauthenticated visitor.
     expect(html).not.toContain("A root shell on pve.lan");
     expect(html).not.toContain("No destination allowlist is configured");
+  });
+
+  test("with an allowlist enforced the consent page shows only the client name", async () => {
+    process.env[ALLOWLIST] = "client.example.com";
+    const redirectUri = "https://client.example.com/cb";
+    const clientId = await register(redirectUri);
+    const page = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      { ...testConfig, grantSummary: ["A root shell on pve.lan (the node and every container), as root"] },
+    );
+    const html = await page.text();
+    expect(html).toContain("Test Client");
+    expect(html).not.toContain("client.example.com</strong>");
+    expect(html).not.toContain("A root shell on pve.lan");
   });
 
   test("the client name cannot inject markup into the consent page", async () => {
@@ -1035,12 +1057,19 @@ async function fullFlowAccessToken(): Promise<string> {
   return (await fullFlowTokens()).access_token;
 }
 
+/** The issued token pair together with the client that owns it, for refreshes. */
+async function fullFlowSession(): Promise<TokenResponse & { clientId: string }> {
+  const { tokenRes, clientId } = await fullFlow({ redirectUri: "https://client.example.com/cb" });
+  expect(tokenRes.status).toBe(200);
+  return { ...((await tokenRes.json()) as TokenResponse), clientId };
+}
+
 function postToken(fields: Record<string, string>): Promise<Response> {
   return oauth.exchangeToken(formRequest("https://mcp.example.com/oauth/token", fields));
 }
 
-async function refresh(refreshToken: string): Promise<TokenResponse> {
-  const res = await postToken({ grant_type: "refresh_token", refresh_token: refreshToken });
+async function refresh(refreshToken: string, clientId: string): Promise<TokenResponse> {
+  const res = await postToken({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId });
   expect(res.status).toBe(200);
   return (await res.json()) as TokenResponse;
 }
@@ -1110,7 +1139,7 @@ describe("identity bound to the token", () => {
     expect(await callbackFails()).toContain("POCKETID_SCOPES includes openid");
   });
 
-  test("a token persisted before identities existed still authenticates, as legacy", async () => {
+  test("a token persisted before identities existed no longer authenticates", async () => {
     const { accessTokens, sha256 } = await import("../src/oauth/state.js");
     const legacy = "vmhq_mcp_legacy_token";
     accessTokens.set(sha256(legacy), {
@@ -1118,9 +1147,21 @@ describe("identity bound to the token", () => {
       scopes: ["mcp"],
       expiresAt: Date.now() + 60_000,
     });
-    const info = oauth.verifyAccessToken(legacy);
-    expect(info).toBeDefined();
-    expect(info!.extra?.actor).toBe("legacy");
+    // Nothing reachable through a token may go unattributed, so a token that
+    // names nobody is refused and dropped rather than logged as "legacy".
+    expect(oauth.verifyAccessToken(legacy)).toBeUndefined();
+    expect(accessTokens.has(sha256(legacy))).toBe(false);
+  });
+
+  test("the oldest persisted token format (a bare expiry) is dropped on load", async () => {
+    const state = await import("../src/oauth/state.js");
+    const hash = state.sha256("vmhq_mcp_numeric_format");
+    state.saveState();
+    const raw = JSON.parse(readFileSync(statePath, "utf-8")) as { accessTokens: unknown[] };
+    raw.accessTokens.push([hash, Date.now() + 60_000]);
+    writeFileSync(statePath, JSON.stringify(raw));
+    state.reloadPersistedOAuthState();
+    expect(state.accessTokens.has(hash)).toBe(false);
   });
 });
 
@@ -1143,6 +1184,52 @@ describe("MCP_ALLOWED_SUBJECTS", () => {
     process.env[VAR] = "someone-else@example.com";
     expect(await callbackFails()).toContain("not allowed to access this server");
   });
+
+  test("removing a person from the allowlist ends their existing session", async () => {
+    const tokens = await fullFlowSession();
+    expect(oauth.verifyAccessToken(tokens.access_token)).toBeDefined();
+
+    process.env[VAR] = "someone-else@example.com";
+    // The access token stops working immediately, not at its expiry...
+    expect(oauth.verifyAccessToken(tokens.access_token)).toBeUndefined();
+    // ...and the refresh token cannot bring it back.
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: tokens.clientId });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("client table cap", () => {
+  test("idle clients are evicted oldest first to make room, clients with tokens are kept", async () => {
+    const { clients, reserveClientSlot, refreshTokens, sha256 } = await import("../src/oauth/state.js");
+    clients.clear();
+    refreshTokens.clear();
+    for (let i = 0; i < 3; i++) {
+      clients.set(`c${i}`, { clientId: `c${i}`, clientIdIssuedAt: 1000 + i, redirectUris: ["https://x/cb"] });
+    }
+    refreshTokens.set(sha256("rt-c0"), {
+      clientId: "c0",
+      scopes: ["mcp"],
+      familyId: "f",
+      expiresAt: Date.now() + 60_000,
+    });
+
+    expect(reserveClientSlot(3)).toBe(true);
+    expect(clients.has("c0")).toBe(true); // holds a token
+    expect(clients.has("c1")).toBe(false); // oldest idle client went first
+    expect(clients.has("c2")).toBe(true);
+  });
+
+  test("registration is refused once every slot holds a live credential", async () => {
+    const { clients, reserveClientSlot, refreshTokens, sha256 } = await import("../src/oauth/state.js");
+    clients.clear();
+    refreshTokens.clear();
+    for (let i = 0; i < 2; i++) {
+      clients.set(`c${i}`, { clientId: `c${i}`, clientIdIssuedAt: 1000 + i, redirectUris: ["https://x/cb"] });
+      refreshTokens.set(sha256(`rt-c${i}`), { clientId: `c${i}`, scopes: ["mcp"], familyId: `f${i}`, expiresAt: Date.now() + 60_000 });
+    }
+    expect(reserveClientSlot(2)).toBe(false);
+    expect(clients.size).toBe(2);
+  });
 });
 
 describe("refresh tokens", () => {
@@ -1153,32 +1240,67 @@ describe("refresh tokens", () => {
   });
 
   test("a refresh token buys a new access token that keeps the identity", async () => {
-    const first = await fullFlowTokens();
-    const refreshed = await refresh(first.refresh_token);
+    const first = await fullFlowSession();
+    const refreshed = await refresh(first.refresh_token, first.clientId);
     expect(refreshed.access_token).not.toBe(first.access_token);
     expect(oauth.verifyAccessToken(refreshed.access_token)!.extra?.actor).toBe("vicente@example.com");
   });
 
   test("rotation invalidates the refresh token that was just used", async () => {
-    const first = await fullFlowTokens();
-    await refresh(first.refresh_token);
-    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token });
+    const first = await fullFlowSession();
+    await refresh(first.refresh_token, first.clientId);
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: first.clientId });
     expect(res.status).toBe(400);
   });
 
   test("replaying a rotated refresh token revokes the whole family", async () => {
-    const first = await fullFlowTokens();
-    const second = await refresh(first.refresh_token);
+    const first = await fullFlowSession();
+    const second = await refresh(first.refresh_token, first.clientId);
 
     // The thief replays the token the legitimate client already spent.
-    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token });
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: first.clientId });
     expect(res.status).toBe(400);
 
     // Everything descended from that authorization is gone, including the
     // credentials the legitimate client was still holding.
     expect(oauth.verifyAccessToken(second.access_token)).toBeUndefined();
-    const afterReuse = await postToken({ grant_type: "refresh_token", refresh_token: second.refresh_token });
+    const afterReuse = await postToken({ grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: first.clientId });
     expect(afterReuse.status).toBe(400);
+  });
+
+  test("a refresh without client_id is refused, not waved through", async () => {
+    const tokens = await fullFlowSession();
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: tokens.refresh_token });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_request");
+    // Refusing an incomplete request must not spend the token.
+    expect((await refresh(tokens.refresh_token, tokens.clientId)).access_token).toBeTruthy();
+  });
+
+  test("the token response is marked uncacheable", async () => {
+    const { tokenRes } = await fullFlow({ redirectUri: "https://client.example.com/cb" });
+    expect(tokenRes.headers.get("cache-control")).toBe("no-store");
+    expect(tokenRes.headers.get("pragma")).toBe("no-cache");
+  });
+
+  test("a session ends at its hard limit no matter how often it refreshes", async () => {
+    const { accessTokens, refreshTokens, sha256, SESSION_MAX_S } = await import("../src/oauth/state.js");
+    const first = await fullFlowSession();
+    const stored = refreshTokens.get(sha256(first.refresh_token))!;
+    expect(stored.familyExpiresAt).toBeGreaterThan(Date.now() + (SESSION_MAX_S - 60) * 1000);
+
+    // Push the family to within a minute of its end: the next pair is capped.
+    const soon = Date.now() + 60_000;
+    stored.familyExpiresAt = soon;
+    const second = await refresh(first.refresh_token, first.clientId);
+    expect(second.expires_in).toBeLessThanOrEqual(60);
+    expect(accessTokens.get(sha256(second.access_token))!.expiresAt).toBeLessThanOrEqual(soon);
+    expect(refreshTokens.get(sha256(second.refresh_token))!.expiresAt).toBeLessThanOrEqual(soon);
+
+    // Past the end, the refresh token is refused even though it is unspent.
+    refreshTokens.get(sha256(second.refresh_token))!.familyExpiresAt = Date.now() - 1;
+    const res = await postToken({ grant_type: "refresh_token", refresh_token: second.refresh_token, client_id: first.clientId });
+    expect(res.status).toBe(400);
   });
 
   test("an unknown refresh token is refused without touching anything else", async () => {
@@ -1212,9 +1334,11 @@ describe("revocation", () => {
   test("listSessions reports who holds a token and never leaks the token itself", async () => {
     const tokens = await fullFlowTokens();
     const sessions = oauth.listSessions();
-    const mine = sessions.find((s) => s.actor === "vicente@example.com");
-    expect(mine).toBeDefined();
-    expect(mine!.renewable).toBe(true);
+    // Earlier tests leave sessions behind whose refresh token was spent or
+    // capped, so look for the one this flow just minted: newest and renewable.
+    const mine = sessions.filter((s) => s.actor === "vicente@example.com");
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.at(-1)!.renewable).toBe(true);
     const serialized = JSON.stringify(sessions);
     expect(serialized).not.toContain(tokens.access_token);
     expect(serialized).not.toContain(tokens.refresh_token);

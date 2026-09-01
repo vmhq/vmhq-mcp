@@ -20,7 +20,7 @@ import {
   verifyAccessToken,
 } from "./oauth.js";
 import { checkRateLimit, rateLimitRetryAfterSec, type ClientIpOptions } from "./rateLimit.js";
-import { requestBodyTooLarge } from "./httpGuards.js";
+import { MAX_REQUEST_BODY_BYTES, requestBodyTooLarge } from "./httpGuards.js";
 
 function rateLimited(req: Request, bucket: string, ipOpts: ClientIpOptions): Response {
   return json(
@@ -131,19 +131,27 @@ const MCP_ENDPOINTS: Record<string, ToolTier> = {
 const AUTHENTICATED_PATHS = new Set([...Object.keys(MCP_ENDPOINTS), "/openapi.json", "/docs"]);
 
 /**
- * Resource identifiers this server answers for, matching what
- * protectedResourceMetadata() advertises. Both endpoints are the same server —
- * the tool tier is decided by the path, not by the token — so a token bound to
- * either is accepted on either.
+ * Resource identifiers accepted on a given path, matching what
+ * protectedResourceMetadata() advertises for it. A token bound to the admin
+ * resource is accepted on the read endpoint too, which only narrows what it
+ * can do. A token bound to `/mcp/read` is accepted there and nowhere else:
+ * otherwise a token that leaked from the day-to-day client would open the
+ * admin tier, and RFC 8707 binding would have bought nothing.
  */
-function expectedResources(): string[] {
+function expectedResources(path: string): string[] {
   const root = config.publicUrl?.replace(/\/$/, "");
   if (!root) return [];
-  return Object.keys(MCP_ENDPOINTS).map((path) => `${root}${path}`);
+  const admin = Object.entries(MCP_ENDPOINTS)
+    .filter(([, tier]) => tier === "admin")
+    .map(([adminPath]) => `${root}${adminPath}`);
+  return path in MCP_ENDPOINTS && MCP_ENDPOINTS[path] === "admin" ? admin : [...admin, `${root}${path}`];
 }
 
 const httpServer = Bun.serve({
   port: config.port,
+  // The Content-Length gate below only sees bodies that declare a length. This
+  // makes Bun refuse a chunked body past the same cap before it is buffered.
+  maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
   async fetch(req, server) {
     const url = new URL(req.url);
     const ipOpts: ClientIpOptions = { socketIp: server.requestIP(req)?.address };
@@ -271,7 +279,9 @@ const httpServer = Bun.serve({
 
     const token = bearerToken(req);
     const isStaticToken = constantTimeEqual(token, config.accessToken);
-    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token, expectedResources());
+    // /openapi.json and /docs describe every service, so they take the admin audience.
+    const resourcePath = url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp";
+    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token, expectedResources(resourcePath));
 
     if (!isStaticToken && !oauthInfo) {
       // A failed attempt burns a much narrower budget than a successful call,

@@ -42,6 +42,40 @@ describe("clientIp", () => {
   });
 });
 
+describe("pinned proxy header", () => {
+  test("only the pinned header is read, so a client cannot supply a different one", () => {
+    // Behind a proxy that sets X-Real-IP, a client-supplied CF-Connecting-IP
+    // used to win. With the header pinned it is ignored.
+    expect(
+      clientIp(
+        req({ "cf-connecting-ip": "203.0.113.99", "x-real-ip": "203.0.113.20" }),
+        { trustedHeader: "x-real-ip" },
+      ),
+    ).toBe("203.0.113.20");
+  });
+
+  test("falls back to the socket IP when the pinned header is absent", () => {
+    expect(
+      clientIp(req({ "cf-connecting-ip": "203.0.113.99" }), { trustedHeader: "x-real-ip", socketIp: "192.0.2.5" }),
+    ).toBe("192.0.2.5");
+  });
+
+  test("a pinned X-Forwarded-For still takes the first hop", () => {
+    expect(
+      clientIp(req({ "x-forwarded-for": "203.0.113.30, 10.0.0.1" }), { trustedHeader: "x-forwarded-for" }),
+    ).toBe("203.0.113.30");
+  });
+
+  test("MCP_TRUSTED_IP_HEADER pins the header for the whole process", () => {
+    process.env.MCP_TRUSTED_IP_HEADER = "X-Real-IP";
+    try {
+      expect(clientIp(req({ "cf-connecting-ip": "203.0.113.99", "x-real-ip": "203.0.113.20" }))).toBe("203.0.113.20");
+    } finally {
+      delete process.env.MCP_TRUSTED_IP_HEADER;
+    }
+  });
+});
+
 describe("socket IP keying", () => {
   test("uses socket IP when proxy headers are not trusted", () => {
     expect(

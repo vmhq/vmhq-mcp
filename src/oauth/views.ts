@@ -1,5 +1,5 @@
 /** HTML views for the OAuth authorization flow (error + success pages). */
-import { canonicalRedirectUri, isRegistrableRedirectUri } from "./redirectUri.js";
+import { canonicalRedirectUri, isRegistrableRedirectUri, redirectTargetLabel } from "./redirectUri.js";
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -72,13 +72,17 @@ export type ConsentDetails = {
  * Consent page shown before bouncing the user to PocketID.
  *
  * Deliberately minimal: the name the client claims for itself and the button.
- * The page is reachable without authentication, so it does not enumerate the
- * destination or what a token would be able to reach. `ConsentDetails` still
- * carries that information for callers and logs, it is just not rendered.
+ * The page is reachable without authentication, so it does not enumerate what
+ * a token would be able to reach. The one exception is the destination, shown
+ * only when no redirect allowlist is enforced: in that configuration any
+ * registered client may ask for a code, and where the code will go is the only
+ * thing the person clicking can check. `ConsentDetails` carries the rest for
+ * callers and logs.
  */
 export function renderAuthorizeConsent(authUrl: string, details: ConsentDetails): Response {
   const href = escapeHtml(authUrl);
   const app = details.clientName ? escapeHtml(details.clientName) : "";
+  const destination = details.allowlisted === false ? escapeHtml(redirectTargetLabel(details.redirectUri)) : "";
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -91,6 +95,8 @@ export function renderAuthorizeConsent(authUrl: string, details: ConsentDetails)
     .card{display:flex;flex-direction:column;align-items:center;gap:1.5rem;padding:2rem;width:100%;max-width:380px;text-align:center}
     h1{margin:0;font-size:1.6rem;font-weight:600;letter-spacing:-.01em}
     p{margin:0;color:#8a8a8a;font-size:.9rem;line-height:1.5}
+    .dest{color:#d4a72c;font-size:.85rem}
+    .dest strong{color:#ededed;font-weight:600}
     .btn{display:block;width:100%;box-sizing:border-box;padding:.8rem 1rem;background:#000;color:#fff;border:1px solid #2a2a2a;border-radius:8px;font-size:.95rem;font-weight:500;text-decoration:none;text-align:center;transition:border-color .15s,background .15s}
     .btn:hover{background:#161616;border-color:#3a3a3a}
   </style>
@@ -99,6 +105,7 @@ export function renderAuthorizeConsent(authUrl: string, details: ConsentDetails)
   <div class="card">
     <h1>VMHQ</h1>
     ${app ? `<p>${app}</p>` : ""}
+    ${destination ? `<p class="dest">The sign-in will send an access code to <strong>${destination}</strong>. Stop here if that is not the app you are connecting.</p>` : ""}
     <a class="btn" href="${href}">Sign in with PocketID</a>
   </div>
 </body>

@@ -24,8 +24,10 @@ import {
   consumedRefreshTokens,
   refreshTokens,
   REFRESH_TOKEN_TTL_S,
+  reserveClientSlot,
   revokeFamily,
   saveState,
+  SESSION_MAX_S,
   sha256,
   TOKEN_TTL_S,
   type Identity,
@@ -199,6 +201,12 @@ export async function registerClient(req: Request): Promise<Response> {
 
   if (redirectUris.length === 0) {
     return oauthError("invalid_redirect_uris");
+  }
+
+  // Registration is public; the table it fills must not be.
+  if (!reserveClientSlot()) {
+    log("error", "oauth_register_client_table_full", { clients: clients.size });
+    return oauthError("temporarily_unavailable", 503);
   }
 
   const clientId = `vmhq_${randomBytes(18).toString("base64url")}`;
@@ -449,11 +457,15 @@ function issueTokens(params: {
   resource?: string;
   identity?: Identity;
   familyId: string;
+  /** Hard end of the session; neither token outlives it. */
+  familyExpiresAt: number;
 }): Response {
-  const { clientId, scopes, resource, identity, familyId } = params;
+  const { clientId, scopes, resource, identity, familyId, familyExpiresAt } = params;
   const accessToken = `vmhq_mcp_${randomBytes(32).toString("base64url")}`;
   const refreshToken = `vmhq_rt_${randomBytes(32).toString("base64url")}`;
   const now = Date.now();
+  const accessExpiresAt = Math.min(now + TOKEN_TTL_S * 1000, familyExpiresAt);
+  const refreshExpiresAt = Math.min(now + REFRESH_TOKEN_TTL_S * 1000, familyExpiresAt);
 
   accessTokens.set(sha256(accessToken), {
     clientId,
@@ -461,7 +473,8 @@ function issueTokens(params: {
     resource,
     identity,
     familyId,
-    expiresAt: now + TOKEN_TTL_S * 1000,
+    familyExpiresAt,
+    expiresAt: accessExpiresAt,
   });
   refreshTokens.set(sha256(refreshToken), {
     clientId,
@@ -469,7 +482,8 @@ function issueTokens(params: {
     resource,
     identity,
     familyId,
-    expiresAt: now + REFRESH_TOKEN_TTL_S * 1000,
+    familyExpiresAt,
+    expiresAt: refreshExpiresAt,
   });
   saveState();
 
@@ -477,11 +491,18 @@ function issueTokens(params: {
     {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: TOKEN_TTL_S,
+      expires_in: Math.max(1, Math.floor((accessExpiresAt - now) / 1000)),
       refresh_token: refreshToken,
       scope: scopes.join(" "),
     },
-    { headers: OAUTH_CORS_HEADERS },
+    {
+      headers: {
+        ...OAUTH_CORS_HEADERS,
+        // RFC 6749 §5.1: a response carrying credentials must not be cached.
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+      },
+    },
   );
 }
 
@@ -554,6 +575,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
     resource: ac.resource,
     identity: ac.identity,
     familyId: randomBytes(12).toString("hex"),
+    familyExpiresAt: Date.now() + SESSION_MAX_S * 1000,
   });
 }
 
@@ -568,6 +590,9 @@ export async function exchangeToken(req: Request): Promise<Response> {
 function exchangeRefreshToken(params: Record<string, string>): Response {
   const { refresh_token: presented = "", client_id: clientId = "" } = params;
   if (!presented) return oauthError("invalid_request");
+  // OAuth 2.1 §4.3.1: a public client identifies itself on every token
+  // request. Without it the check below would be skipped rather than failed.
+  if (!clientId) return oauthError("invalid_request");
 
   const hash = sha256(presented);
   const stored = refreshTokens.get(hash);
@@ -596,8 +621,23 @@ function exchangeRefreshToken(params: Record<string, string>): Response {
     saveState();
     return oauthError("invalid_grant");
   }
-  if (clientId && stored.clientId !== clientId) {
+  if (stored.clientId !== clientId) {
     saveState();
+    return oauthError("invalid_grant");
+  }
+  // The session's hard end is inherited, never extended, by a refresh.
+  const familyExpiresAt = stored.familyExpiresAt ?? Date.now() + SESSION_MAX_S * 1000;
+  if (familyExpiresAt <= Date.now()) {
+    saveState();
+    log("info", "oauth_session_max_lifetime_reached", { clientId, familyId: stored.familyId });
+    return oauthError("invalid_grant");
+  }
+  // The allowlist is re-read here so that removing someone from
+  // MCP_ALLOWED_SUBJECTS ends their session at the next refresh rather than
+  // leaving it renewable until someone notices.
+  if (!stored.identity || !isAllowedSubject(stored.identity)) {
+    saveState();
+    log("error", "oauth_refresh_subject_not_allowed", { clientId, actor: actorFor(stored.identity) });
     return oauthError("invalid_grant");
   }
 
@@ -613,6 +653,7 @@ function exchangeRefreshToken(params: Record<string, string>): Response {
     resource: stored.resource,
     identity: stored.identity,
     familyId: stored.familyId,
+    familyExpiresAt,
   });
 }
 
@@ -678,6 +719,13 @@ function resourceMatches(tokenResource: string, expected: string): boolean {
  * this server issued for a different audience would still open /mcp. Tokens
  * with no `resource` — everything issued before RFC 8707 was honoured, and any
  * client that does not send the parameter — are unaffected.
+ *
+ * A token with no identity is refused: everything reachable through it is
+ * logged by actor, and "legacy" is not an actor. Such tokens predate identity
+ * recording by long enough that any still on disk are stale, not in use.
+ * The subject allowlist is re-checked on every call for the same reason it is
+ * re-checked on refresh: a person removed from it should lose access now, not
+ * when their token happens to expire.
  */
 export function verifyAccessToken(token: string, expectedResources?: string[]): AuthInfo | undefined {
   if (!token) return undefined;
@@ -689,6 +737,15 @@ export function verifyAccessToken(token: string, expectedResources?: string[]): 
     // the timestamp check above already rejects it on every future lookup regardless
     // of map presence, and the periodic prune persists the cleanup eventually.
     accessTokens.delete(hash);
+    return undefined;
+  }
+  if (!stored.identity) {
+    log("error", "oauth_token_without_identity_rejected", { clientId: stored.clientId });
+    accessTokens.delete(hash);
+    return undefined;
+  }
+  if (!isAllowedSubject(stored.identity)) {
+    log("error", "oauth_token_subject_not_allowed", { clientId: stored.clientId, actor: actorFor(stored.identity) });
     return undefined;
   }
   // Legacy persisted state may hold an invalid resource; never throw here.

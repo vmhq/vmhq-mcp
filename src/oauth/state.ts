@@ -50,6 +50,12 @@ export type StoredToken = {
   identity?: Identity;
   /** Links the token to its refresh-token family, so revoking one kills both. */
   familyId?: string;
+  /**
+   * Hard end of the whole family, fixed when the authorization code was
+   * redeemed. Refresh rotation cannot move it. Absent on tokens issued before
+   * it existed, which then live by their own expiresAt alone.
+   */
+  familyExpiresAt?: number;
   expiresAt: number;
 };
 
@@ -65,6 +71,8 @@ export type StoredRefreshToken = {
   resource?: string;
   identity?: Identity;
   familyId: string;
+  /** See StoredToken.familyExpiresAt. */
+  familyExpiresAt?: number;
   expiresAt: number;
 };
 
@@ -135,6 +143,32 @@ export const REFRESH_TOKEN_TTL_S = (() => {
 })();
 
 /**
+ * Longest a session may live from the moment the code is redeemed, whatever
+ * the refresh cadence. Rotation renews the refresh token's own lifetime, so
+ * without this a session that keeps refreshing never ends, and neither does a
+ * stolen refresh chain that is used at least once a month. Configurable via
+ * MCP_OAUTH_SESSION_MAX_S; the default is 90 days.
+ */
+export const SESSION_MAX_S = (() => {
+  const raw = process.env.MCP_OAUTH_SESSION_MAX_S;
+  if (!raw) return 60 * 60 * 24 * 90;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("MCP_OAUTH_SESSION_MAX_S must be a positive number of seconds.");
+  }
+  return value;
+})();
+
+/**
+ * Cap on registered clients. Registration is public and every registration
+ * rewrites the whole state file synchronously, so an unbounded table is a way
+ * to grow that file and stall the event loop from the outside. Clients with no
+ * live credential are evicted oldest first to make room; clients that still
+ * hold a token are never evicted, and registration fails instead.
+ */
+export const MAX_REGISTERED_CLIENTS = 200;
+
+/**
  * Clients outlive their tokens: prune 30 days after the longest-lived
  * credential they can hold. Measured against the refresh TTL, not the access
  * TTL, so a short access token cannot cause a client to be pruned while its own
@@ -190,12 +224,10 @@ function loadState(): void {
 
     if (Array.isArray(saved.accessTokens)) {
       for (const [hash, data] of saved.accessTokens) {
-        // Backwards-compat: old format stored just a number (expiresAt)
-        if (typeof data === "number") {
-          if (data > now) {
-            accessTokens.set(hash, { clientId: "legacy", scopes: ["mcp"], expiresAt: data });
-          }
-        } else if (typeof data === "object" && data !== null && data.expiresAt > now) {
+        // The oldest format stored just a number (expiresAt) with no identity.
+        // Such a token names nobody, so it is dropped rather than honoured;
+        // verifyAccessToken() refuses identity-less tokens for the same reason.
+        if (typeof data === "object" && data !== null && data.expiresAt > now) {
           accessTokens.set(hash, data);
         }
       }
@@ -266,6 +298,37 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   }
 
   if (dirty) saveState();
+}
+
+/** Client ids that still hold an access token, a refresh token, or a pending code. */
+function clientsWithCredentials(): Set<string> {
+  const live = new Set<string>();
+  for (const token of accessTokens.values()) live.add(token.clientId);
+  for (const token of refreshTokens.values()) live.add(token.clientId);
+  for (const code of codes.values()) live.add(code.clientId);
+  for (const pending of pendingAuth.values()) live.add(pending.clientId);
+  return live;
+}
+
+/**
+ * Makes room for one more registration under MAX_REGISTERED_CLIENTS by
+ * evicting idle clients, oldest first. Returns false when the table is full of
+ * clients that still hold credentials, in which case the caller must refuse.
+ */
+export function reserveClientSlot(max = MAX_REGISTERED_CLIENTS): boolean {
+  if (clients.size < max) return true;
+
+  const live = clientsWithCredentials();
+  const idle = [...clients.values()]
+    .filter((client) => !live.has(client.clientId))
+    .sort((a, b) => a.clientIdIssuedAt - b.clientIdIssuedAt);
+
+  for (const client of idle) {
+    if (clients.size < max) break;
+    clients.delete(client.clientId);
+  }
+
+  return clients.size < max;
 }
 
 /** Reload clients, authorization codes, and tokens from disk (for tests and hot recovery). */
