@@ -176,7 +176,8 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # MCP_ALLOWED_HOSTS=mcp.example.com
 
 # Comma-separated OIDC subjects or emails allowed to sign in. Unset means
-# PocketID's own per-client group restriction is the only gate.
+# PocketID's own per-client group restriction is the only gate. Re-checked on
+# every request and refresh, so removing someone here ends their session.
 # MCP_ALLOWED_SUBJECTS=vicente@example.com
 
 # Access token lifetime in seconds (default 86400 = 24h). Clients renew with a
@@ -184,6 +185,9 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # MCP_OAUTH_TOKEN_TTL_S=86400
 # Refresh token lifetime in seconds (default 2592000 = 30 days).
 # MCP_OAUTH_REFRESH_TTL_S=2592000
+# Hard limit on a session's total life in seconds, refreshes included
+# (default 7776000 = 90 days). After this the person signs in again.
+# MCP_OAUTH_SESSION_MAX_S=7776000
 # Timeout for upstream API calls. Defaults to 30000.
 # MCP_UPSTREAM_TIMEOUT_MS=30000
 # Structured log level: silent, error, info, debug. Defaults to info.
@@ -192,13 +196,16 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # Stored OAuth access tokens are persisted as SHA-256 hashes.
 # The data/ directory is gitignored — runtime OAuth state must never be committed.
 # MCP_OAUTH_STATE_PATH=/app/data/oauth-state.json
-# Access token lifetime in seconds for OAuth-issued tokens. Defaults to 2592000 (30 days).
-# MCP_OAUTH_TOKEN_TTL_S=2592000
 # Whether to trust reverse-proxy IP headers for per-IP rate limiting. Defaults to true.
 # Set to false if this server is ever reachable without a trusted reverse proxy in front
 # of it, since those headers are otherwise spoofable and let a caller dodge rate limits.
 # When false, rate limits are keyed by the real socket IP instead.
 # MCP_TRUST_PROXY=true
+# The ONE header your proxy sets with the client IP: cf-connecting-ip (Cloudflare),
+# x-real-ip (nginx) or x-forwarded-for (Traefik/Dokploy). Strongly recommended: when
+# unset all three are consulted, and a client can supply whichever one your proxy
+# does not strip and dodge the per-IP limits.
+# MCP_TRUSTED_IP_HEADER=x-forwarded-for
 ```
 
 ## Codex configuration
@@ -355,7 +362,12 @@ Job files are kept for `PROXMOX_SSH_JOB_RETENTION_DAYS` (default 30, `0` disable
 ### Two endpoints: `/mcp` and `/mcp/read`
 
 `/mcp` exposes every tool. `/mcp/read` exposes the same services and the same
-auth, minus `proxmox_lxc_exec` and `proxmox_node_exec`.
+auth, minus `proxmox_lxc_exec` and `proxmox_node_exec`, and it refuses every
+service call that is not a plain read: `*_request` only accepts `GET`,
+`*_operation` only runs catalog entries that are `GET` and not marked
+`destructive`, and `*_api_reference` / `vmhq_find_operation` list only those.
+The Proxmox REST API can create and destroy guests on its own, so leaving out
+the shell tools was never enough for "read" to mean read.
 
 The split exists because everything this server reads — SearXNG results,
 Miniflux articles, Karakeep bookmarks — is text
@@ -366,9 +378,11 @@ root shell. On `/mcp/read` those tools are never registered, so there is nothing
 for such an instruction to call.
 
 Point your day-to-day client at `/mcp/read`, and add a second connector on
-`/mcp` for the sessions where you actually maintain the node. Both endpoints
-accept the same tokens; the separation is per session, not per credential.
-`vmhq_status` reports which tier it is running under.
+`/mcp` for the sessions where you actually maintain the node. A token the
+client bound to `/mcp/read` (RFC 8707 `resource`) is accepted there and nowhere
+else, so a token that leaks from the day-to-day client does not open the admin
+tier; a token bound to `/mcp` works on both. `vmhq_status` reports which tier
+it is running under.
 
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 

@@ -22,8 +22,10 @@ import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMe
 
 /**
  * Which tools a session gets. "admin" is everything; "read" leaves out the
- * Proxmox exec tools, so a session that ingests untrusted text cannot reach a
- * root shell. Chosen per endpoint in index.ts, not per request.
+ * Proxmox exec tools and refuses every service call that is not a plain GET
+ * (see isReadOnlyEndpoint), so a session that ingests untrusted text cannot
+ * reach a root shell or a state-changing API. Chosen per endpoint in index.ts,
+ * not per request.
  */
 export type ToolTier = "read" | "admin";
 
@@ -135,11 +137,33 @@ export function operationBody(endpoint: ApiEndpoint, inputBody: unknown): unknow
   return { ...endpoint.defaultBody, ...body };
 }
 
-function compactCatalog(serviceId: keyof typeof API_CATALOGS, group?: string, search?: string): unknown {
+/**
+ * What the read tier may call. "Read" is judged by the HTTP method and by the
+ * catalog's own `destructive` flag, not by the tool name: the tier exists so
+ * that text pulled in from the outside cannot reach anything that changes
+ * state, and a POST to the Proxmox API or to AdGuard changes plenty.
+ */
+export function isReadOnlyEndpoint(endpoint: Pick<ApiEndpoint, "method" | "destructive">): boolean {
+  return endpoint.method === "GET" && !endpoint.destructive;
+}
+
+function readTierRefusal(what: string) {
+  return errorResult({
+    error: {
+      type: "not_available_on_read_tier",
+      service: "vmhq",
+      message: `${what} is not available on the read tier. Use the admin endpoint (/mcp) for anything that writes.`,
+      retryable: false,
+    },
+  });
+}
+
+function compactCatalog(serviceId: keyof typeof API_CATALOGS, tier: ToolTier, group?: string, search?: string): unknown {
   const catalog = catalogFor(serviceId);
   const normalizedGroup = group?.toLowerCase();
   const normalizedSearch = search?.toLowerCase();
   const endpoints = catalog.endpoints.filter((endpoint) => {
+    if (tier === "read" && !isReadOnlyEndpoint(endpoint)) return false;
     const groupMatches = !normalizedGroup || endpoint.group.toLowerCase() === normalizedGroup;
     const searchHaystack = `${endpoint.operationId} ${endpoint.method} ${endpoint.path} ${endpoint.summary}`.toLowerCase();
     const searchMatches = !normalizedSearch || searchHaystack.includes(normalizedSearch);
@@ -246,7 +270,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
         status: "ok",
         tier,
         ...(tier === "read"
-          ? { tierNote: "Read tier: the Proxmox shell tools are not available on this endpoint. Use the admin endpoint for node maintenance." }
+          ? { tierNote: "Read tier: only GET operations that the catalog does not mark destructive are available, and the Proxmox shell tools are not registered. Use the admin endpoint for anything that writes." }
           : {}),
         enabledServices: enabled,
         disabledServices: disabled,
@@ -286,6 +310,7 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
 
         return catalog.endpoints
           .filter((endpoint) => {
+            if (tier === "read" && !isReadOnlyEndpoint(endpoint)) return false;
             if (method && endpoint.method !== method) return false;
             const haystack = `${endpoint.operationId} ${endpoint.method} ${endpoint.path} ${endpoint.summary}`.toLowerCase();
             return haystack.includes(normalizedQuery);
@@ -352,22 +377,24 @@ function registerSessionTools(server: McpServer, sessions: SessionStore, ctx: Re
   );
 }
 
-function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, ctx: RequestContext): void {
+function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, ctx: RequestContext, tier: ToolTier): void {
+  const readNote = tier === "read" ? " This endpoint runs on the read tier: only GET operations not marked destructive are available." : "";
+
   server.tool(
     `${service.id}_api_reference`,
-    `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.`,
+    `Return the documented ${service.title} API operations known by this MCP server, including operation IDs, methods, paths, parameters and notes.${readNote}`,
     apiReferenceSchema,
     { title: `${service.title} API Reference` },
     async ({ group, search }: { group?: string; search?: string }) => {
-      return textResult(compactCatalog(service.id, group, search));
+      return textResult(compactCatalog(service.id, tier, group, search));
     },
   );
 
   server.tool(
     `${service.id}_operation`,
-    `Call a documented ${service.title} operation by operationId. Use ${service.id}_api_reference first to discover valid operations and required path parameters.`,
+    `Call a documented ${service.title} operation by operationId. Use ${service.id}_api_reference first to discover valid operations and required path parameters.${readNote}`,
     apiOperationSchema,
-    { title: `${service.title} Operation` },
+    { title: `${service.title} Operation`, ...(tier === "read" ? { readOnlyHint: true } : {}) },
     async (input: {
       operationId: string;
       pathParams?: Record<string, string | number>;
@@ -385,6 +412,12 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
           operationId: input.operationId,
           hint: `Call ${service.id}_api_reference to list supported operation IDs.`,
         });
+      }
+
+      // Checked against the catalog entry, not the caller's claim, so a
+      // destructive operation cannot be reached by naming it differently.
+      if (tier === "read" && !isReadOnlyEndpoint(endpoint)) {
+        return readTierRefusal(`${endpoint.method} ${endpoint.operationId}`);
       }
 
       const result = await callService(
@@ -407,10 +440,16 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
 
   server.tool(
     `${service.id}_request`,
-    `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}`,
+    `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}${tier === "read" ? " This endpoint runs on the read tier: only GET requests are accepted." : ""}`,
     serviceRequestSchema,
-    { title: `${service.title} Request` },
+    { title: `${service.title} Request`, ...(tier === "read" ? { readOnlyHint: true } : {}) },
     async (input: ServiceRequestInput) => {
+      // A free-form path cannot be judged by the catalog, so on the read tier
+      // the method is the only thing that can be, and only GET passes.
+      if (tier === "read" && input.method !== "GET") {
+        return readTierRefusal(`${input.method} ${input.path}`);
+      }
+
       const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, ...ctx });
       return textResult(result, input.maxLength);
     },
@@ -672,7 +711,7 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
   }
 
   for (const service of services) {
-    registerServiceTools(server, service, upstreamTimeoutMs, ctx);
+    registerServiceTools(server, service, upstreamTimeoutMs, ctx, tier);
   }
 
   return server;

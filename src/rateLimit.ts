@@ -16,11 +16,35 @@ function trustProxyHeaders(): boolean {
   return (process.env.MCP_TRUST_PROXY ?? "true").toLowerCase() !== "false";
 }
 
+/** Headers consulted, in order, when no single header has been pinned. */
+const LEGACY_PROXY_HEADERS = ["cf-connecting-ip", "x-real-ip", "x-forwarded-for"] as const;
+
+/**
+ * The one header the reverse proxy in front of this server sets, from
+ * MCP_TRUSTED_IP_HEADER. Consulting several at once is a bypass waiting to
+ * happen: a proxy that sets X-Real-IP does not strip CF-Connecting-IP, so a
+ * client behind it can supply that one itself and win. Unset keeps the older
+ * behaviour of trying all three; loadConfig() says so at startup.
+ */
+export function trustedIpHeader(): string | undefined {
+  const raw = process.env.MCP_TRUSTED_IP_HEADER?.trim().toLowerCase();
+  return raw || undefined;
+}
+
 export type ClientIpOptions = {
   trustProxy?: boolean;
   /** Real socket IP from the HTTP server (Bun: server.requestIP(req)). */
   socketIp?: string;
+  /** Only this header is read when set. Defaults to MCP_TRUSTED_IP_HEADER. */
+  trustedHeader?: string;
 };
+
+function ipFromHeader(req: Request, header: string): string | undefined {
+  const value = req.headers.get(header)?.trim();
+  if (!value) return undefined;
+  // X-Forwarded-For is a chain; the first hop is the client as the proxy saw it.
+  return header === "x-forwarded-for" ? value.split(",")[0]?.trim() || undefined : value;
+}
 
 /**
  * Client IP from reverse-proxy headers (Cloudflare, nginx, etc.) when trusted,
@@ -30,13 +54,11 @@ export type ClientIpOptions = {
 export function clientIp(req: Request, options: ClientIpOptions = {}): string | undefined {
   const trustProxy = options.trustProxy ?? trustProxyHeaders();
   if (trustProxy) {
-    for (const header of ["cf-connecting-ip", "x-real-ip"]) {
-      const value = req.headers.get(header)?.trim();
+    const pinned = options.trustedHeader?.trim().toLowerCase() || trustedIpHeader();
+    const headers = pinned ? [pinned] : LEGACY_PROXY_HEADERS;
+    for (const header of headers) {
+      const value = ipFromHeader(req, header);
       if (value) return value;
-    }
-    const forwarded = req.headers.get("x-forwarded-for");
-    if (forwarded) {
-      return forwarded.split(",")[0]?.trim() || options.socketIp;
     }
   }
   return options.socketIp;

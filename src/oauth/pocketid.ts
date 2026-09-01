@@ -39,6 +39,12 @@ export type PocketIdIdentity = {
 };
 
 const DISCOVERY_TTL_MS = 60 * 60 * 1000; // 1 hour
+/**
+ * Ceiling on every call to the provider. Both calls sit inside a browser
+ * request handler, so an identity provider that stops answering would
+ * otherwise hold those handlers open for as long as it liked.
+ */
+export const PROVIDER_TIMEOUT_MS = 10_000;
 let discoveryCache: { issuer: string; data: Discovery; expiresAt: number } | undefined;
 /**
  * Remote JWKS for the current issuer. createRemoteJWKSet() caches the keys and
@@ -59,7 +65,7 @@ async function discover(cfg: PocketIdConfig): Promise<Discovery> {
   }
 
   const url = `${cfg.issuer}/.well-known/openid-configuration`;
-  const res = await fetch(url, { headers: { accept: "application/json" } });
+  const res = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS) });
   if (!res.ok) {
     throw new Error(`pocketid_discovery_http_${res.status}`);
   }
@@ -186,6 +192,7 @@ export async function exchangePocketIdCode(
         accept: "application/json",
       },
       body,
+      signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
     });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

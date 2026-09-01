@@ -7,7 +7,11 @@ services:
       - path: .env
         required: false
     ports:
-      - "${HOST_PORT:-3010}:${MCP_PORT:-3010}"
+      # Loopback only: the reverse proxy reaches the container over the Docker
+      # network, and MCP_TRUST_PROXY defaults to trusting forwarded IP headers,
+      # which a direct connection could forge. Set HOST_BIND=0.0.0.0 only when
+      # nothing sits in front of this server.
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-3010}:${MCP_PORT:-3010}"
     volumes:
       - vmhq-mcp-data:/app/data
       # Mount the SSH key used by the Proxmox shell tools (PROXMOX_SSH_KEY_PATH).

@@ -3,6 +3,7 @@ import { allowedRedirectHosts } from "./oauth/redirectUri.js";
 import { log } from "./logger.js";
 import { isPrivateHost, serviceFromRegistryEntry, SERVICE_REGISTRY } from "./serviceRegistry.js";
 import { isAllowedShell, type ProxmoxSshConfig } from "./sshClient.js";
+import { trustedIpHeader } from "./rateLimit.js";
 import type { PocketIdConfig } from "./oauth.js";
 
 function readEnv(name: string, fallback?: string): string {
@@ -204,6 +205,14 @@ export function loadConfig(): AppConfig {
     .filter(Boolean);
   if (allowedSubjects.length > 0) {
     log("info", "oauth_subject_allowlist_configured", { count: allowedSubjects.length });
+  }
+
+  // Trusting every proxy header at once means any one the proxy does not strip
+  // is the client's to set. Say so once, like the redirect allowlist above.
+  if ((readEnv("MCP_TRUST_PROXY", "true").toLowerCase() !== "false") && !trustedIpHeader()) {
+    log("error", "rate_limit_proxy_header_not_pinned", {
+      hint: "Set MCP_TRUSTED_IP_HEADER to the one header your reverse proxy sets (e.g. cf-connecting-ip or x-forwarded-for), or MCP_TRUST_PROXY=false if nothing sits in front of this server.",
+    });
   }
 
   // Opt-in on purpose: deriving the allowed host from MCP_PUBLIC_URL would make

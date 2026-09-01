@@ -94,6 +94,14 @@ const searxng: ServiceDefinition = {
   defaultPathPrefix: "/",
 };
 
+const miniflux: ServiceDefinition = {
+  id: "miniflux",
+  title: "Miniflux",
+  baseUrl: "http://miniflux.lan",
+  auth: { type: "none" },
+  defaultPathPrefix: "/v1",
+};
+
 /** Records what vmhq_sessions was asked to do, without touching real OAuth state. */
 function fakeSessions(): SessionStore & { revokeCalls: Array<Record<string, unknown>> } {
   const revokeCalls: Array<Record<string, unknown>> = [];
@@ -170,6 +178,90 @@ describe("tool tiers", () => {
       "vmhq_sessions",
     ]);
     expect(read.filter((name) => !admin.includes(name))).toEqual([]);
+  });
+
+  /**
+   * The exec tools are not the only way to change state: every service tool
+   * accepts POST, PUT and DELETE, and the Proxmox REST API alone can create
+   * and destroy guests. "Read" has to mean read for those tools too.
+   */
+  describe("the read tier refuses anything that writes", () => {
+    process.env.MCP_LOG_LEVEL = "silent";
+
+    async function connectWith(tier: ToolTier) {
+      const server = createMcpServer({ services: [miniflux], iconUrl: "https://x/icon.svg", tier });
+      const client = new Client({ name: "test", version: "0" });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      return client;
+    }
+
+    async function callTool(client: Client, name: string, args: Record<string, unknown>) {
+      const result = await client.callTool({ name, arguments: args });
+      return {
+        isError: result.isError === true,
+        text: (result.content as Array<{ text: string }>)[0]!.text,
+      };
+    }
+
+    test("*_request only accepts GET", async () => {
+      const client = await connectWith("read");
+      try {
+        const { isError, text } = await callTool(client, "miniflux_request", { method: "DELETE", path: "/v1/feeds/1" });
+        expect(isError).toBe(true);
+        expect(text).toContain("not_available_on_read_tier");
+      } finally {
+        await client.close();
+      }
+    });
+
+    test("*_operation refuses operations the catalog marks destructive or non-GET", async () => {
+      const client = await connectWith("read");
+      try {
+        for (const operationId of ["update_me", "create_user"]) {
+          const { isError, text } = await callTool(client, "miniflux_operation", { operationId });
+          expect(isError).toBe(true);
+          expect(text).toContain("not_available_on_read_tier");
+        }
+      } finally {
+        await client.close();
+      }
+    });
+
+    test("the catalog and the cross-service search only list what the tier can call", async () => {
+      const client = await connectWith("read");
+      try {
+        const reference = JSON.parse((await callTool(client, "miniflux_api_reference", {})).text) as {
+          endpoints: Array<{ operationId: string; method: string; destructive?: boolean }>;
+        };
+        expect(reference.endpoints.length).toBeGreaterThan(0);
+        expect(reference.endpoints.every((e) => e.method === "GET" && !e.destructive)).toBe(true);
+        expect(reference.endpoints.map((e) => e.operationId)).toContain("get_me");
+
+        const found = JSON.parse((await callTool(client, "vmhq_find_operation", { query: "user" })).text) as {
+          results: Array<{ operationId: string; method: string }>;
+        };
+        expect(found.results.map((r) => r.operationId)).toContain("get_users");
+        expect(found.results.map((r) => r.operationId)).not.toContain("create_user");
+      } finally {
+        await client.close();
+      }
+    });
+
+    test("the admin tier still lists and allows the same operations", async () => {
+      const client = await connectWith("admin");
+      try {
+        const reference = JSON.parse((await callTool(client, "miniflux_api_reference", {})).text) as {
+          endpoints: Array<{ operationId: string }>;
+        };
+        expect(reference.endpoints.map((e) => e.operationId)).toContain("create_user");
+        // The call reaches callService and fails on the network, not on the tier.
+        const { text } = await callTool(client, "miniflux_request", { method: "DELETE", path: "/v1/feeds/1" });
+        expect(text).not.toContain("not_available_on_read_tier");
+      } finally {
+        await client.close();
+      }
+    });
   });
 
   test("an omitted tier stays admin, so a new call site cannot silently widen access", async () => {
