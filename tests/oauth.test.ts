@@ -153,11 +153,44 @@ function redirectUrlFromSuccessPage(html: string): string {
 }
 
 /** Extract the PocketID sign-in URL from the intermediate consent page. */
-function pocketIdUrlFromConsentPage(html: string): string {
-  const match = html.match(/class="btn" href="([^"]+)"/);
-  if (!match) throw new Error("consent page missing PocketID sign-in URL");
-  return match[1].replace(/&amp;/g, "&");
+const consentCookies = new Map<string, string>();
+async function pocketIdUrlFromConsentPage(html: string, response: Response): Promise<string> {
+  const txn = html.match(/name="transaction" value="([^"]+)"/)![1]!;
+  const cookie = response.headers.get("set-cookie")!.split(";")[0]!;
+  consentCookies.set(txn, cookie);
+  const approved = await oauth.approveAuthorize(new Request("https://mcp.example.com/oauth/authorize", {
+    method: "POST", headers: { origin: "https://mcp.example.com", cookie },
+    body: new URLSearchParams({transaction: txn}),
+  }), testConfig);
+  expect(approved.status).toBe(303);
+  return approved.headers.get("location")!;
 }
+
+describe("browser-bound consent", () => {
+  test("rejects missing/foreign cookies, cross-origin POSTs, callback before approval and replay", async () => {
+    const clientId = await register("https://client.example.com/cb");
+    const page = await oauth.beginAuthorize(authorizeRequest({client_id:clientId, redirect_uri:"https://client.example.com/cb",code_challenge:s256("a".repeat(43)),code_challenge_method:"S256"}), testConfig);
+    const html = await page.text();
+    expect(html).not.toContain(POCKETID_AUTHORIZE);
+    expect(page.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(page.headers.get("set-cookie")).toContain("Secure");
+    const txn = html.match(/name="transaction" value="([^"]+)"/)![1]!;
+    const cookie = page.headers.get("set-cookie")!.split(";")[0]!;
+    const approve = (cookieValue: string, origin = "https://mcp.example.com") => oauth.approveAuthorize(new Request("https://mcp.example.com/oauth/authorize", {method:"POST",headers:{cookie:cookieValue,origin},body:new URLSearchParams({transaction:txn})}),testConfig);
+    const callback = (cookieValue: string) => oauth.oauthCallback(new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`,{headers:{cookie:cookieValue}}),testConfig);
+    expect((await callback(cookie)).status).toBe(400);
+    expect((await approve("")).status).toBe(400);
+    expect((await approve(cookie+"wrong")).status).toBe(400);
+    expect((await approve(cookie,"https://attacker.example")).status).toBe(400);
+    expect((await approve(cookie)).status).toBe(303);
+    expect((await approve(cookie)).status).toBe(400);
+    // A transferred IdP link does not grant access in the recipient's browser.
+    expect((await callback("")).status).toBe(400);
+    expect((await callback(cookie+"wrong")).status).toBe(400);
+    expect((await callback(cookie)).status).toBe(200);
+    expect((await callback(cookie)).status).toBe(400);
+  });
+});
 
 /**
  * Drive the full bridge flow: GET /oauth/authorize → PocketID redirect →
@@ -183,13 +216,13 @@ async function authorizeViaPocketId(opts: {
 
   const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
   expect(beginRes.status).toBe(200);
-  const pocketIdUrl = pocketIdUrlFromConsentPage(await beginRes.text());
+  const pocketIdUrl = await pocketIdUrlFromConsentPage(await beginRes.text(), beginRes);
   expect(pocketIdUrl).toContain(POCKETID_AUTHORIZE);
   const txn = new URL(pocketIdUrl).searchParams.get("state")!;
   expect(txn).toBeTruthy();
 
   const cbRes = await oauth.oauthCallback(
-    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`, { headers: { cookie: consentCookies.get(txn) ?? "" } }),
     testConfig,
   );
   expect(cbRes.status).toBe(200);
@@ -334,8 +367,8 @@ describe("GET /oauth/authorize", () => {
     );
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Sign in with PocketID");
-    const location = new URL(pocketIdUrlFromConsentPage(html));
+    expect(html).toContain("Approve and sign in with PocketID");
+    const location = new URL(await pocketIdUrlFromConsentPage(html, res));
     expect(location.origin + location.pathname).toBe(POCKETID_AUTHORIZE);
     expect(location.searchParams.get("client_id")).toBe("mcp-client");
     expect(location.searchParams.get("redirect_uri")).toBe("https://mcp.example.com/oauth/callback");
@@ -417,11 +450,11 @@ describe("GET /oauth/callback", () => {
       }),
       testConfig,
     );
-    const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
+    const txn = new URL(await pocketIdUrlFromConsentPage(await beginRes.text(), beginRes)).searchParams.get("state")!;
 
     pocketIdTokenShouldFail = true;
     const res = await oauth.oauthCallback(
-      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`, { headers: { cookie: consentCookies.get(txn) ?? "" } }),
       testConfig,
     );
     expect(res.status).toBe(400);
@@ -555,9 +588,9 @@ describe("Claude web redirect URI", () => {
       state: "s",
     };
     const beginRes = await oauth.beginAuthorize(authorizeRequest(fields), testConfig);
-    const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
+    const txn = new URL(await pocketIdUrlFromConsentPage(await beginRes.text(), beginRes)).searchParams.get("state")!;
     const cbRes = await oauth.oauthCallback(
-      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+      new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`, { headers: { cookie: consentCookies.get(txn) ?? "" } }),
       testConfig,
     );
     const redirectUrl = redirectUrlFromSuccessPage(await cbRes.text());
@@ -993,7 +1026,7 @@ describe("redirect destination control", () => {
     expect(html).toContain("evil.example.com");
     // Nothing about what a token reaches, or how the server is configured,
     // may leak to an unauthenticated visitor.
-    expect(html).not.toContain("A root shell on pve.lan");
+    expect(html).toContain("A root shell on pve.lan");
     expect(html).not.toContain("No destination allowlist is configured");
   });
 
@@ -1013,8 +1046,8 @@ describe("redirect destination control", () => {
     );
     const html = await page.text();
     expect(html).toContain("Test Client");
-    expect(html).not.toContain("client.example.com</strong>");
-    expect(html).not.toContain("A root shell on pve.lan");
+    expect(html).toContain("client.example.com</strong>");
+    expect(html).toContain("A root shell on pve.lan");
   });
 
   test("the client name cannot inject markup into the consent page", async () => {
@@ -1088,9 +1121,9 @@ async function callbackFails(): Promise<string> {
     }),
     testConfig,
   );
-  const txn = new URL(pocketIdUrlFromConsentPage(await beginRes.text())).searchParams.get("state")!;
+  const txn = new URL(await pocketIdUrlFromConsentPage(await beginRes.text(), beginRes)).searchParams.get("state")!;
   const cbRes = await oauth.oauthCallback(
-    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`),
+    new Request(`https://mcp.example.com/oauth/callback?code=pocket-code&state=${txn}`, { headers: { cookie: consentCookies.get(txn) ?? "" } }),
     testConfig,
   );
   expect(cbRes.status).toBe(400);

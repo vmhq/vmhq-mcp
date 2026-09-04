@@ -41,6 +41,7 @@ export type SshErrorType =
   | "ssh_timeout"
   | "ssh_auth_failed"
   | "ssh_host_key_mismatch"
+  | "ssh_host_key_store_failed"
   | "ssh_connection_error";
 
 export type SshExecOptions = {
@@ -308,6 +309,7 @@ export async function runSshCommand(
     let actualFingerprint = "";
     /** Set when a previously pinned key did not match, for the error message. */
     let expectedFingerprint = "";
+    let hostStoreFailed = false;
     let settled = false;
 
     // On timeout the connection is dropped, but the command keeps running on
@@ -330,6 +332,10 @@ export async function runSshCommand(
     }
 
     conn.on("error", (error: Error & { level?: string }) => {
+      if (hostStoreFailed) {
+        settle(sshError("ssh_host_key_store_failed", "Cannot verify or persist the SSH host key. Check PROXMOX_SSH_KNOWN_HOSTS_PATH before retrying."));
+        return;
+      }
       if (config.hostFingerprint && actualFingerprint && actualFingerprint !== normalizeFingerprint(config.hostFingerprint)) {
         settle(
           sshError(
@@ -416,14 +422,20 @@ export async function runSshCommand(
 
         // Otherwise trust on first use: pin whatever answered the first time
         // and require it from then on, rather than accepting any key forever.
-        const pinned = knownHostKey(config.host, config.port);
-        if (!pinned) {
-          rememberHostKey(config.host, config.port, actualFingerprint);
-          return true;
-        }
+        try {
+          const pinned = knownHostKey(config.host, config.port);
+          if (!pinned) {
+            rememberHostKey(config.host, config.port, actualFingerprint);
+            return true;
+          }
 
-        expectedFingerprint = pinned;
-        return actualFingerprint === pinned;
+          expectedFingerprint = pinned;
+          return actualFingerprint === pinned;
+        } catch (error) {
+          hostStoreFailed = true;
+          log("error", "ssh_host_key_store_failed", { host: config.host, error: error instanceof Error ? error.message : String(error) });
+          return false;
+        }
       },
     });
   });

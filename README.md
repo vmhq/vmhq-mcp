@@ -425,3 +425,7 @@ The local catalogue was built from the official documentation reviewed on 2026-0
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
 - AdGuard Home API (OpenAPI spec): https://github.com/AdguardTeam/AdGuardHome/tree/master/openapi
+
+## Security changes (2026-09-04)
+
+See [SECURITY_REMEDIATION.md](SECURITY_REMEDIATION.md) for the implementation plan, completed checks and rollout notes. OAuth now requires browser-bound POST consent; pending older logins must restart. Read tools accept only catalogued safe GET routes and validate redirect targets; Miniflux `update_content=true` is refused. SSH connections fail when the known-hosts store cannot be verified or written. CI now runs `bun audit`.

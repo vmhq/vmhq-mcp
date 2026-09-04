@@ -82,6 +82,9 @@ export type StoredRefreshToken = {
  * opaque transaction id that is passed to PocketID as its `state` parameter.
  */
 export type PendingAuth = {
+  /** Browser secret hash and explicit consent; legacy transactions are rejected. */
+  browserHash?: string;
+  approved?: boolean;
   /** The MCP client (Claude.ai, Cursor, …) that initiated the authorization. */
   clientId: string;
   /** Redirect URI the MCP client expects the final code on. */

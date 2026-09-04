@@ -60,29 +60,19 @@ export type ConsentDetails = {
   clientName?: string;
   /** What this token will be able to reach, one line per capability. */
   grants?: string[];
-  /**
-   * Whether a destination allowlist is actually being enforced. False means
-   * MCP_ALLOWED_REDIRECT_HOSTS is unset, so any registered client can ask for
-   * a code and the destination above is the only thing worth reading.
-   */
+  /** Kept for callers using the older view API; destination is always shown. */
   allowlisted?: boolean;
 };
 
 /**
  * Consent page shown before bouncing the user to PocketID.
  *
- * Deliberately minimal: the name the client claims for itself and the button.
- * The page is reachable without authentication, so it does not enumerate what
- * a token would be able to reach. The one exception is the destination, shown
- * only when no redirect allowlist is enforced: in that configuration any
- * registered client may ask for a code, and where the code will go is the only
- * thing the person clicking can check. `ConsentDetails` carries the rest for
- * callers and logs.
+ * Shows the destination and effective capabilities. Only a same-origin POST
+ * with the transaction's browser cookie can obtain the provider redirect.
  */
-export function renderAuthorizeConsent(authUrl: string, details: ConsentDetails): Response {
-  const href = escapeHtml(authUrl);
+export function renderAuthorizeConsent(transaction: string, details: ConsentDetails): Response {
   const app = details.clientName ? escapeHtml(details.clientName) : "";
-  const destination = details.allowlisted === false ? escapeHtml(redirectTargetLabel(details.redirectUri)) : "";
+  const destination = escapeHtml(redirectTargetLabel(details.redirectUri));
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -106,7 +96,11 @@ export function renderAuthorizeConsent(authUrl: string, details: ConsentDetails)
     <h1>VMHQ</h1>
     ${app ? `<p>${app}</p>` : ""}
     ${destination ? `<p class="dest">The sign-in will send an access code to <strong>${destination}</strong>. Stop here if that is not the app you are connecting.</p>` : ""}
-    <a class="btn" href="${href}">Sign in with PocketID</a>
+    <ul>${(details.grants ?? []).map((grant) => `<li>${escapeHtml(grant)}</li>`).join("")}</ul>
+    <form method="post" action="/oauth/authorize">
+      <input type="hidden" name="transaction" value="${escapeHtml(transaction)}">
+      <button class="btn" type="submit">Approve and sign in with PocketID</button>
+    </form>
   </div>
 </body>
 </html>`;

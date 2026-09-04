@@ -7,6 +7,7 @@ import { generateOpenApiSpec, renderSwaggerUI, SWAGGER_UI_CSP } from "./openapi.
 import {
   authorizationServerMetadata,
   beginAuthorize,
+  approveAuthorize,
   listSessions,
   constantTimeEqual,
   exchangeToken,
@@ -226,11 +227,11 @@ const httpServer = Bun.serve({
       return secureResponse(await registerClient(req));
     }
 
-    if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+    if (url.pathname === "/oauth/authorize" && (req.method === "GET" || req.method === "POST")) {
       if (!checkRateLimit(req, "oauth_authorize", ipOpts)) {
         return secureResponse(rateLimited(req, "oauth_authorize", ipOpts));
       }
-      return secureResponse(await beginAuthorize(req, oauthConfig));
+      return secureResponse(await (req.method === "POST" ? approveAuthorize(req, oauthConfig) : beginAuthorize(req, oauthConfig)));
     }
 
     if (url.pathname === "/oauth/callback" && req.method === "GET") {

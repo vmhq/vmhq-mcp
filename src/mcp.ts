@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
-import { callService, interpolatePath } from "./serviceClient.js";
+import { buildUrl, callService, interpolatePath } from "./serviceClient.js";
 import {
   assertShellAllowed,
   assertVmidAllowed,
@@ -377,7 +377,28 @@ function registerSessionTools(server: McpServer, sessions: SessionStore, ctx: Re
   );
 }
 
+export function isReadOnlyUrl(service: ServiceDefinition, url: URL): boolean {
+  if (url.origin !== new URL(service.baseUrl).origin) return false;
+  // Decode once and reject ambiguous separators / nested escapes before matching.
+  let path: string;
+  try { path = decodeURIComponent(url.pathname); } catch { return false; }
+  if (path.includes("%") || path.includes("\\") || path.includes("//")) return false;
+  const known = API_CATALOGS[service.id].endpoints.some((endpoint) => {
+    if (!isReadOnlyEndpoint(endpoint)) return false;
+    const template = buildUrl(service, { method: "GET", path: endpoint.path }).pathname;
+    const decoded = decodeURIComponent(template);
+    const pattern = decoded.split(/\{[^}]+\}/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]+");
+    return new RegExp(`^${pattern}$`).test(path);
+  });
+  if (!known) return false;
+  if (service.id === "miniflux" && path.endsWith("/fetch-content")) {
+    return url.searchParams.getAll("update_content").every((value) => value === "false");
+  }
+  return true;
+}
+
 function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, ctx: RequestContext, tier: ToolTier): void {
+  const readPolicy = tier === "read" ? { allowUrl: (url: URL) => isReadOnlyUrl(service, url) } : {};
   const readNote = tier === "read" ? " This endpoint runs on the read tier: only GET operations not marked destructive are available." : "";
 
   server.tool(
@@ -431,7 +452,7 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
           fields: input.fields,
           maxLength: input.maxLength,
         },
-        { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, ...ctx },
+        { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, operationId: endpoint.operationId, ...ctx, ...readPolicy },
       );
 
       return textResult({ operation: endpoint, result }, input.maxLength);
@@ -440,17 +461,17 @@ function registerServiceTools(server: McpServer, service: ServiceDefinition, ups
 
   server.tool(
     `${service.id}_request`,
-    `Call any ${service.title} API endpoint through the configured ${service.title} base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}${tier === "read" ? " This endpoint runs on the read tier: only GET requests are accepted." : ""}`,
+    `Call ${service.title} API endpoints through the configured base URL. Use relative paths only. Common API prefix: ${service.defaultPathPrefix}${tier === "read" ? " Only catalogued read-only GET routes and safe parameters are accepted, including redirects. Miniflux update_content must be absent or false." : ""}`,
     serviceRequestSchema,
     { title: `${service.title} Request`, ...(tier === "read" ? { readOnlyHint: true } : {}) },
     async (input: ServiceRequestInput) => {
-      // A free-form path cannot be judged by the catalog, so on the read tier
-      // the method is the only thing that can be, and only GET passes.
+      // The method is checked here; callService applies the URL policy both
+      // before fetching and at every redirect hop.
       if (tier === "read" && input.method !== "GET") {
         return readTierRefusal(`${input.method} ${input.path}`);
       }
 
-      const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, ...ctx });
+      const result = await callService(service, input, { timeoutMs: service.timeoutMs ?? upstreamTimeoutMs, ...ctx, ...readPolicy });
       return textResult(result, input.maxLength);
     },
   );

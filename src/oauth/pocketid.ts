@@ -83,6 +83,13 @@ async function discover(cfg: PocketIdConfig): Promise<Discovery> {
     token_endpoint: json.token_endpoint,
     jwks_uri: json.jwks_uri,
   };
+  if (data.issuer !== cfg.issuer) throw new Error("pocketid_discovery_issuer_mismatch");
+  for (const endpoint of [data.authorization_endpoint, data.token_endpoint, data.jwks_uri]) {
+    const parsed = new URL(endpoint);
+    if (parsed.username || parsed.password || (parsed.protocol !== "https:" && !(new URL(cfg.issuer).protocol === "http:" && parsed.origin === new URL(cfg.issuer).origin))) {
+      throw new Error("pocketid_discovery_insecure_endpoint");
+    }
+  }
   discoveryCache = { issuer: cfg.issuer, data, expiresAt: Date.now() + DISCOVERY_TTL_MS };
   return data;
 }
@@ -193,6 +200,7 @@ export async function exchangePocketIdCode(
       },
       body,
       signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      redirect: "error",
     });
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

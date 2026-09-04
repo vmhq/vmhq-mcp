@@ -322,7 +322,7 @@ export const API_CATALOGS: Record<ServiceId, ApiCatalog> = {
       { operationId: "rewrite_delete", method: "POST", path: "/rewrite/delete", group: "rewrite", summary: "Remove a DNS rewrite rule.", body: "{ domain: string, answer: string }", destructive: true },
       { operationId: "rewrite_update", method: "PUT", path: "/rewrite/update", group: "rewrite", summary: "Update an existing DNS rewrite rule.", body: "{ target: RewriteRule, update: RewriteRule }", destructive: true },
       { operationId: "login", method: "POST", path: "/login", group: "global", summary: "Perform administrator log-in (only needed if not using HTTP Basic Auth).", body: "{ name: string, password: string }" },
-      { operationId: "logout", method: "GET", path: "/logout", group: "global", summary: "Perform administrator log-out." },
+      { operationId: "logout", method: "GET", path: "/logout", group: "global", summary: "Perform administrator log-out.", destructive: true },
       { operationId: "profile", method: "GET", path: "/profile", group: "global", summary: "Get the current user's profile info." },
     ],
   },

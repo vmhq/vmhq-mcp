@@ -29,10 +29,16 @@ function readStore(): Record<string, KnownHostEntry> {
   try {
     const parsed = JSON.parse(readFileSync(storePath(), "utf-8")) as unknown;
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const entry of Object.values(parsed)) {
+        if (!entry || typeof entry !== "object" || typeof entry.fingerprint !== "string" || !entry.fingerprint.startsWith("SHA256:") || !entry.fingerprint.slice(7)) {
+          throw new Error("Invalid SSH known-hosts entry.");
+        }
+      }
       return parsed as Record<string, KnownHostEntry>;
     }
-  } catch {
-    // No store yet, or an unreadable one: treat the host as unseen.
+    throw new Error("Invalid SSH known-hosts store.");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   return {};
 }
@@ -46,9 +52,8 @@ export function knownHostKey(host: string, port: number): string | undefined {
  * Records the fingerprint seen on a first connection. Written atomically at
  * 0600, mirroring how the OAuth state file is persisted.
  *
- * A store that cannot be written is logged and otherwise ignored: a read-only
- * volume should not take the node offline, it should only mean the key is not
- * pinned yet.
+ * Read/parse/write failures propagate to the host verifier, which refuses the
+ * connection. Only a missing file permits first-use enrollment.
  */
 export function rememberHostKey(host: string, port: number, fingerprint: string): void {
   const path = storePath();
@@ -70,6 +75,7 @@ export function rememberHostKey(host: string, port: number, fingerprint: string)
       path,
       error: error instanceof Error ? error.message : String(error),
     });
+    throw error;
   }
 }
 

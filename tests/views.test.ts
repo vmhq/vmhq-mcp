@@ -31,7 +31,7 @@ describe("renderAuthorizeConsent", () => {
       clientName: "Claude",
       allowlisted: true,
     }).text();
-    expect(enforced).not.toContain("<strong>");
+    expect(enforced).toContain("<strong>claude.ai</strong>");
   });
 
   test("escapes the destination like everything else on the page", async () => {

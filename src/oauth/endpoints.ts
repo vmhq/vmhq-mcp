@@ -34,7 +34,6 @@ import {
   type RegisteredClient,
 } from "./state.js";
 import {
-  allowedRedirectHosts,
   expandRedirectUris,
   isAllowedRedirectTarget,
   isRegistrableRedirectUri,
@@ -322,8 +321,11 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
   pruneExpiredOAuthState();
 
   const txn = randomBytes(24).toString("base64url");
+  const browserSecret = randomBytes(32).toString("base64url");
   const pkceVerifier = randomBytes(32).toString("base64url");
   pendingAuth.set(txn, {
+    browserHash: sha256(browserSecret),
+    approved: false,
     clientId,
     redirectUri,
     codeChallenge,
@@ -335,11 +337,47 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
   });
   saveState();
 
+  const response = renderAuthorizeConsent(txn, {
+    redirectUri,
+    clientName: client.clientName,
+    grants: resource === `${baseUrl(config, req)}/mcp/read`
+      ? ["Read access to configured services; no shell execution."]
+      : config.grantSummary ?? ["Administrative access to configured services and tools."],
+  });
+  response.headers.set("Set-Cookie", `${consentCookieName(txn)}=${browserSecret}; Path=/oauth; HttpOnly; SameSite=Lax; Max-Age=600${new URL(callbackUri(config, req)).protocol === "https:" ? "; Secure" : ""}`);
+  response.headers.set("Cache-Control", "no-store");
+  log("info", "oauth_authorize_consent_shown", { clientId, redirectHost: redirectTargetLabel(redirectUri) });
+  return response;
+}
+
+function consentCookieName(txn: string): string { return `vmhq_consent_${txn}`; }
+
+function browserMatches(req: Request, txn: string, hash: string | undefined): boolean {
+  if (!hash || !/^[A-Za-z0-9_-]{32}$/.test(txn)) return false;
+  const cookies = (req.headers.get("cookie") ?? "").split(";").map((v) => v.trim());
+  const value = cookies.find((v) => v.startsWith(`${consentCookieName(txn)}=`))?.split("=")[1];
+  return !!value && sha256(value) === hash;
+}
+
+/** A same-origin POST and a per-transaction browser cookie are both required. */
+export async function approveAuthorize(req: Request, config: OAuthConfig): Promise<Response> {
+  if (req.method !== "POST" || req.headers.get("origin") !== new URL(baseUrl(config, req)).origin) {
+    return renderAuthorizeError("Invalid consent origin.");
+  }
+  let params: Record<string, string>;
+  try { params = await parseFormOrJson(req); } catch { return renderAuthorizeError("Invalid consent request."); }
+  const txn = params.transaction ?? "";
+  const pending = pendingAuth.get(txn);
+  if (!pending || pending.expiresAt <= Date.now() || pending.approved || !browserMatches(req, txn, pending.browserHash) || !config.pocketId) {
+    return renderAuthorizeError("Invalid or expired consent transaction.");
+  }
+  pending.approved = true;
+  saveState();
   let authUrl: string;
   try {
     authUrl = await buildPocketIdAuthUrl(config.pocketId, callbackUri(config, req), {
       state: txn,
-      codeChallenge: sha256(pkceVerifier),
+      codeChallenge: sha256(pending.pkceVerifier),
     });
   } catch (err) {
     pendingAuth.delete(txn);
@@ -350,13 +388,8 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     return renderAuthorizeError("Could not reach the identity provider. Please try again later.");
   }
 
-  log("info", "oauth_authorize_consent_shown", { clientId, redirectHost: redirectTargetLabel(redirectUri) });
-  return renderAuthorizeConsent(authUrl, {
-    redirectUri,
-    clientName: client.clientName,
-    grants: config.grantSummary,
-    allowlisted: allowedRedirectHosts().length > 0,
-  });
+  log("info", "oauth_authorize_consent_approved", { clientId: pending.clientId, redirectHost: redirectTargetLabel(pending.redirectUri) });
+  return new Response(null, { status: 303, headers: { Location: authUrl, "Cache-Control": "no-store" } });
 }
 
 // ─── GET /oauth/callback ──────────────────────────────────────────────────────
@@ -379,6 +412,9 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
 
   // Single-use: consume the pending transaction immediately
   const pending = pendingAuth.get(txn);
+  if (!pending?.approved || !browserMatches(req, txn, pending.browserHash)) {
+    return renderAuthorizeError("Consent is missing, expired or belongs to a different browser.");
+  }
   if (pending) { pendingAuth.delete(txn); saveState(); }
 
   if (!pending || pending.expiresAt < Date.now()) {

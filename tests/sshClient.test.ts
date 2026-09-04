@@ -704,15 +704,23 @@ describe("host key trust on first use", () => {
     expect(result.stdout).toBe("ok");
   });
 
-  test("an unwritable store does not take the node offline", async () => {
-    // A read-only volume should mean "not pinned yet", not "cannot connect".
+  test("an unwritable store refuses the connection before exec", async () => {
     process.env.PROXMOX_SSH_KNOWN_HOSTS_PATH = "/proc/vmhq/cannot-write.json";
-    const server = await startServer({ onExec: ({ write, exit }) => (write("ok"), exit(0)) });
+    let executed = false;
+    const server = await startServer({ onExec: ({ exit }) => { executed = true; exit(0); } });
     const result = await runSshCommand(configFor(server.port), "true");
     server.close();
-
-    if (isSshFailure(result)) throw new Error(`unexpected failure: ${result.error.message}`);
-    expect(result.stdout).toBe("ok");
+    expect(isSshFailure(result)).toBe(true);
+    expect(executed).toBe(false);
+  });
+  test("a corrupt store refuses the connection before exec", async () => {
+    writeFileSync(dir + "/known-hosts.json", "invalid json");
+    let executed = false;
+    const server = await startServer({ onExec: ({ exit }) => { executed = true; exit(0); } });
+    const result = await runSshCommand(configFor(server.port), "true");
+    server.close();
+    expect(isSshFailure(result)).toBe(true);
+    expect(executed).toBe(false);
   });
 });
 

@@ -342,6 +342,7 @@ function redirectTarget(response: Response, current: URL): URL | undefined {
 }
 
 export type CallServiceOptions = {
+  allowUrl?: (url: URL) => boolean;
   timeoutMs?: number;
   operationId?: string;
   requestId?: string;
@@ -359,6 +360,7 @@ export async function callService(
 
   try {
     url = buildUrl(service, input);
+    if (options.allowUrl && !options.allowUrl(url)) throw new Error("not_available_on_read_tier: URL or parameters are not read-only.");
   } catch (error) {
     return normalizedError("invalid_request", service, error instanceof Error ? error.message : "Invalid request.");
   }
@@ -421,6 +423,9 @@ export async function callService(
     if (followsRedirects) {
       let hops = 0;
       for (let next = redirectTarget(response, requestUrl); next; next = redirectTarget(response, requestUrl)) {
+        if (options.allowUrl && !options.allowUrl(next)) {
+          return normalizedError("invalid_request", service, "not_available_on_read_tier: redirect is not read-only.");
+        }
         if (next.origin !== baseOrigin) {
           log("error", "upstream_redirect_blocked", {
             service: service.id,

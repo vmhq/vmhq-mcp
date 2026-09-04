@@ -14,6 +14,7 @@ export {
   OAUTH_CORS_HEADERS,
   authorizationServerMetadata,
   beginAuthorize,
+  approveAuthorize,
   exchangeToken,
   isOAuthAccessToken,
   listSessions,
