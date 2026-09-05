@@ -13,6 +13,21 @@ const FORM_SECURITY_HEADERS = {
   "X-Frame-Options": "DENY",
 } as const;
 
+/**
+ * Consent page CSP. Chrome applies `form-action` to every hop of the redirect
+ * chain that follows a form POST (crbug 40748334), so the 303 from
+ * POST /oauth/authorize to the identity provider is blocked unless the
+ * provider's origin is listed here. Only that one origin is added.
+ */
+function consentSecurityHeaders(providerOrigin?: string): Record<string, string> {
+  const formAction = providerOrigin ? `form-action 'self' ${providerOrigin}` : "form-action 'self'";
+  return {
+    ...FORM_SECURITY_HEADERS,
+    "Content-Security-Policy":
+      `default-src 'none'; style-src 'unsafe-inline'; ${formAction}; base-uri 'none'; frame-ancestors 'none'`,
+  };
+}
+
 const SUCCESS_PAGE_CSP = {
   "Content-Security-Policy":
     "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -58,8 +73,11 @@ export type ConsentDetails = {
   redirectUri: string;
   /** Name the client claims for itself at registration. Never verified. */
   clientName?: string;
-  /** What this token will be able to reach, one line per capability. */
-  grants?: string[];
+  /**
+   * Origin of the identity provider the approval POST redirects to. Needed in
+   * the page's `form-action` so the browser follows that redirect.
+   */
+  providerOrigin?: string;
   /** Kept for callers using the older view API; destination is always shown. */
   allowlisted?: boolean;
 };
@@ -67,8 +85,11 @@ export type ConsentDetails = {
 /**
  * Consent page shown before bouncing the user to PocketID.
  *
- * Shows the destination and effective capabilities. Only a same-origin POST
- * with the transaction's browser cookie can obtain the provider redirect.
+ * Shows only the client name and the destination of the code. What a token
+ * can reach is deliberately not listed: registration is public, so anyone can
+ * reach this page and it must not describe the server behind it. Only a
+ * same-origin POST with the transaction's browser cookie can obtain the
+ * provider redirect.
  */
 export function renderAuthorizeConsent(transaction: string, details: ConsentDetails): Response {
   const app = details.clientName ? escapeHtml(details.clientName) : "";
@@ -96,7 +117,6 @@ export function renderAuthorizeConsent(transaction: string, details: ConsentDeta
     <h1>VMHQ</h1>
     ${app ? `<p>${app}</p>` : ""}
     ${destination ? `<p class="dest">The sign-in will send an access code to <strong>${destination}</strong>. Stop here if that is not the app you are connecting.</p>` : ""}
-    <ul>${(details.grants ?? []).map((grant) => `<li>${escapeHtml(grant)}</li>`).join("")}</ul>
     <form method="post" action="/oauth/authorize">
       <input type="hidden" name="transaction" value="${escapeHtml(transaction)}">
       <button class="btn" type="submit">Approve and sign in with PocketID</button>
@@ -107,7 +127,7 @@ export function renderAuthorizeConsent(transaction: string, details: ConsentDeta
 
   return new Response(html, {
     status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8", ...FORM_SECURITY_HEADERS },
+    headers: { "Content-Type": "text/html; charset=utf-8", ...consentSecurityHeaders(details.providerOrigin) },
   });
 }
 

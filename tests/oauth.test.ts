@@ -1015,7 +1015,7 @@ describe("redirect destination control", () => {
         code_challenge_method: "S256",
         state: "client-state",
       }),
-      { ...testConfig, grantSummary: ["A root shell on pve.lan (the node and every container), as root"] },
+      testConfig,
     );
     const html = await page.text();
 
@@ -1026,7 +1026,8 @@ describe("redirect destination control", () => {
     expect(html).toContain("evil.example.com");
     // Nothing about what a token reaches, or how the server is configured,
     // may leak to an unauthenticated visitor.
-    expect(html).toContain("A root shell on pve.lan");
+    expect(html).not.toMatch(/root shell|read and write access|proxmox|miniflux/i);
+    expect(html).not.toContain("<li>");
     expect(html).not.toContain("No destination allowlist is configured");
   });
 
@@ -1042,12 +1043,32 @@ describe("redirect destination control", () => {
         code_challenge_method: "S256",
         state: "client-state",
       }),
-      { ...testConfig, grantSummary: ["A root shell on pve.lan (the node and every container), as root"] },
+      testConfig,
     );
     const html = await page.text();
     expect(html).toContain("Test Client");
     expect(html).toContain("client.example.com</strong>");
-    expect(html).toContain("A root shell on pve.lan");
+    expect(html).not.toContain("<li>");
+  });
+
+  test("the consent page lets the browser follow the approval redirect to PocketID", async () => {
+    // Chrome applies form-action to the redirect chain after a form POST, so
+    // the provider origin must be listed or the 303 to PocketID is blocked.
+    process.env[ALLOWLIST] = "client.example.com";
+    const redirectUri = "https://client.example.com/cb";
+    const clientId = await register(redirectUri);
+    const page = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        state: "client-state",
+      }),
+      testConfig,
+    );
+    const csp = page.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain(`form-action 'self' ${new URL(POCKETID_AUTHORIZE).origin}`);
   });
 
   test("the client name cannot inject markup into the consent page", async () => {

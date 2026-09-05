@@ -56,36 +56,12 @@ export type AppConfig = {
   pocketId?: PocketIdConfig;
   /** SSH access to the Proxmox node, enabling shell tools (optional). */
   proxmoxSsh?: ProxmoxSshConfig;
-  /** Plain-language capabilities of an issued token, shown on the consent page. */
-  grantSummary: string[];
   /**
    * Host header values accepted on /mcp. When set, the MCP transport enables
    * DNS-rebinding protection. Empty means the protection stays off.
    */
   allowedHosts: string[];
 };
-
-/**
- * What a token issued through the OAuth flow can actually reach. The consent
- * page shows this, so someone deciding whether to continue is told that they
- * are handing over a root shell rather than "access to an MCP server".
- */
-export function describeGrants(services: ServiceDefinition[], proxmoxSsh?: ProxmoxSshConfig): string[] {
-  const grants: string[] = [];
-
-  if (proxmoxSsh) {
-    const scope = proxmoxSsh.allowedVmids
-      ? `containers ${proxmoxSsh.allowedVmids.join(", ")}`
-      : "the node and every container";
-    grants.push(`A root shell on ${proxmoxSsh.host} (${scope}), as ${proxmoxSsh.user}`);
-  }
-
-  for (const service of services) {
-    grants.push(`Full read and write access to ${service.title}`);
-  }
-
-  return grants;
-}
 
 function parseVmidList(raw: string): number[] | undefined {
   const vmids = raw
@@ -239,7 +215,6 @@ export function loadConfig(): AppConfig {
     services,
     pocketId: loadPocketIdConfig(),
     proxmoxSsh,
-    grantSummary: describeGrants(services, proxmoxSsh),
     allowedHosts,
   };
 }

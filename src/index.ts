@@ -38,7 +38,6 @@ const oauthConfig = {
   publicUrl: config.publicUrl,
   iconUrl: config.iconUrl,
   pocketId: config.pocketId,
-  grantSummary: config.grantSummary,
 };
 const iconSvg = await Bun.file(new URL("./assets/icon.svg", import.meta.url)).text();
 // Services and publicUrl are fixed at startup, so the spec never changes across requests.

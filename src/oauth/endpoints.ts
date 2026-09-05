@@ -58,11 +58,6 @@ export type OAuthConfig = {
   iconUrl?: string;
   /** PocketID identity provider. When unset, interactive authorization is disabled. */
   pocketId?: PocketIdConfig;
-  /**
-   * Plain-language list of what an issued token can reach, shown on the consent
-   * page so the user is told what they are handing over before they hand it over.
-   */
-  grantSummary?: string[];
 };
 
 // ─── CORS headers (required for browser-based OAuth discovery) ────────────────
@@ -340,9 +335,7 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
   const response = renderAuthorizeConsent(txn, {
     redirectUri,
     clientName: client.clientName,
-    grants: resource === `${baseUrl(config, req)}/mcp/read`
-      ? ["Read access to configured services; no shell execution."]
-      : config.grantSummary ?? ["Administrative access to configured services and tools."],
+    providerOrigin: config.pocketId ? new URL(config.pocketId.issuer).origin : undefined,
   });
   response.headers.set("Set-Cookie", `${consentCookieName(txn)}=${browserSecret}; Path=/oauth; HttpOnly; SameSite=Lax; Max-Age=600${new URL(callbackUri(config, req)).protocol === "https:" ? "; Secure" : ""}`);
   response.headers.set("Cache-Control", "no-store");
