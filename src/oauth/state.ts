@@ -22,6 +22,8 @@ export type RegisteredClient = {
 export type Identity = {
   subject: string;
   email?: string;
+  /** The provider asserted the email is verified. Only then may it match MCP_ALLOWED_SUBJECTS. */
+  emailVerified?: boolean;
 };
 
 /** Log-friendly name for an identity: the email if there is one, else the sub. */

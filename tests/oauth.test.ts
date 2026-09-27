@@ -26,7 +26,7 @@ const POCKETID_CLIENT_ID = "mcp-client";
 let signingKeys: { privateKey: CryptoKey; publicJwk: JWK };
 let attackerKeys: { privateKey: CryptoKey; publicJwk: JWK };
 
-const DEFAULT_CLAIMS = { sub: "user-123", email: "vicente@example.com", name: "Vicente" };
+const DEFAULT_CLAIMS = { sub: "user-123", email: "vicente@example.com", email_verified: true, name: "Vicente" };
 
 /** Overrides applied to the next issued id_token, for the rejection cases. */
 let idTokenOverride:
@@ -1162,7 +1162,7 @@ describe("identity bound to the token", () => {
     const token = await fullFlowAccessToken();
     const info = oauth.verifyAccessToken(token)!;
     expect(info.extra?.actor).toBe("vicente@example.com");
-    expect(info.extra?.identity).toEqual({ subject: "user-123", email: "vicente@example.com" });
+    expect(info.extra?.identity).toEqual({ subject: "user-123", email: "vicente@example.com", emailVerified: true });
   });
 
   test("falls back to the subject when the provider asserts no email", async () => {
@@ -1231,6 +1231,18 @@ describe("MCP_ALLOWED_SUBJECTS", () => {
     process.env[VAR] = "vicente@example.com";
     expect(await fullFlowAccessToken()).toBeTruthy();
     process.env[VAR] = "user-123";
+    expect(await fullFlowAccessToken()).toBeTruthy();
+  });
+
+  test("an email only matches when the provider asserts it verified", async () => {
+    process.env[VAR] = "vicente@example.com";
+    idTokenOverride = { claims: { email_verified: false } };
+    expect(await callbackFails()).toContain("not allowed to access this server");
+    idTokenOverride = { claims: { email_verified: undefined } };
+    expect(await callbackFails()).toContain("not allowed to access this server");
+    // The subject is unaffected.
+    process.env[VAR] = "user-123";
+    idTokenOverride = { claims: { email_verified: false } };
     expect(await fullFlowAccessToken()).toBeTruthy();
   });
 
@@ -1392,6 +1404,8 @@ describe("revocation", () => {
     // capped, so look for the one this flow just minted: newest and renewable.
     const mine = sessions.filter((s) => s.actor === "vicente@example.com");
     expect(mine.length).toBeGreaterThan(0);
+    // The subject is listed, since it is what MCP_ALLOWED_SUBJECTS should hold.
+    expect(mine.at(-1)!.subject).toBe("user-123");
     expect(mine.at(-1)!.renewable).toBe(true);
     const serialized = JSON.stringify(sessions);
     expect(serialized).not.toContain(tokens.access_token);

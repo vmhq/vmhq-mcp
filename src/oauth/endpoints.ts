@@ -75,6 +75,10 @@ export const OAUTH_CORS_HEADERS = {
  * Optional allowlist of who may sign in, from MCP_ALLOWED_SUBJECTS (comma
  * separated OIDC `sub` values or emails). Unset means PocketID's own per-client
  * group restriction remains the only gate, which is the pre-existing behaviour.
+ *
+ * An email only matches when the provider asserted it verified: an account
+ * whose owner can edit their own email would otherwise be able to claim a
+ * listed address. The subject cannot be edited and is the better key.
  */
 function allowedSubjects(): string[] {
   return (process.env.MCP_ALLOWED_SUBJECTS ?? "")
@@ -85,7 +89,9 @@ function allowedSubjects(): string[] {
 
 export function isAllowedSubject(identity: Identity, allowed = allowedSubjects()): boolean {
   if (allowed.length === 0) return true;
-  const candidates = [identity.subject, identity.email].filter(Boolean).map((v) => v!.toLowerCase());
+  const candidates = [identity.subject, identity.emailVerified ? identity.email : undefined]
+    .filter(Boolean)
+    .map((v) => v!.toLowerCase());
   return candidates.some((value) => allowed.includes(value));
 }
 
@@ -478,6 +484,7 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
   const identity: Identity = {
     subject: result.identity.subject,
     ...(result.identity.email ? { email: result.identity.email } : {}),
+    ...(result.identity.emailVerified ? { emailVerified: true } : {}),
   };
 
   // Checked before any credential is minted, so a rejected person never holds
@@ -871,6 +878,8 @@ export type SessionSummary = {
   clientId: string;
   clientName?: string;
   actor: string;
+  /** OIDC subject, the value to put in MCP_ALLOWED_SUBJECTS. */
+  subject?: string;
   scopes: string[];
   expiresAt: string;
   /** Whether the session can renew itself past the access token's expiry. */
@@ -896,6 +905,7 @@ export function listSessions(now = Date.now()): SessionSummary[] {
       clientId: token.clientId,
       ...(clients.get(token.clientId)?.clientName ? { clientName: clients.get(token.clientId)!.clientName } : {}),
       actor: actorFor(token.identity),
+      ...(token.identity?.subject ? { subject: token.identity.subject } : {}),
       scopes: token.scopes,
       expiresAt: new Date(token.expiresAt).toISOString(),
       renewable: token.familyId ? renewableFamilies.has(token.familyId) : false,
