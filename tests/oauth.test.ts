@@ -1431,8 +1431,32 @@ describe("token audience", () => {
     return ((await tokenRes.json()) as { access_token: string }).access_token;
   }
 
-  test("a token bound to another server is refused", async () => {
-    const token = await tokenBoundTo("https://someone-else.example.com/mcp");
+  test("a resource belonging to another server is refused before any token exists", async () => {
+    const clientId = await register("https://audience.example.com/cb");
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: "https://audience.example.com/cb",
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        resource: "https://someone-else.example.com/mcp",
+      }),
+      testConfig,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.text()).toContain("only issues tokens for its own MCP endpoints");
+  });
+
+  test("a persisted token bound to another server is refused", async () => {
+    const { accessTokens, sha256 } = await import("../src/oauth/state.js");
+    const token = "vmhq_mcp_foreign_audience";
+    accessTokens.set(sha256(token), {
+      clientId: "c",
+      scopes: ["mcp"],
+      resource: "https://someone-else.example.com/mcp",
+      identity: { subject: "user-123" },
+      expiresAt: Date.now() + 60_000,
+    });
     expect(oauth.verifyAccessToken(token, OURS)).toBeUndefined();
   });
 
@@ -1448,14 +1472,32 @@ describe("token audience", () => {
     expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp/"])).toBeDefined();
   });
 
-  test("a token with no resource is unaffected, which covers everything already issued", async () => {
+  test("an authorization that names no resource is bound to the read endpoint", async () => {
     const token = await tokenBoundTo();
-    expect(oauth.verifyAccessToken(token, OURS)).toBeDefined();
+    expect(oauth.verifyAccessToken(token)?.resource?.toString()).toBe("https://mcp.example.com/mcp/read");
+    expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp/read"])).toBeDefined();
+    expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp"])).toBeUndefined();
+  });
+
+  test("a token persisted without a resource counts as a read-endpoint token", async () => {
+    const { accessTokens, sha256 } = await import("../src/oauth/state.js");
+    const token = "vmhq_mcp_unbound_legacy";
+    accessTokens.set(sha256(token), {
+      clientId: "c",
+      scopes: ["mcp"],
+      identity: { subject: "user-123" },
+      expiresAt: Date.now() + 60_000,
+    });
+    const READ = "https://mcp.example.com/mcp/read";
+    expect(oauth.verifyAccessToken(token, OURS, READ)).toBeDefined();
+    expect(oauth.verifyAccessToken(token, ["https://mcp.example.com/mcp"], READ)).toBeUndefined();
+    // With nothing to assume, an unbound token is refused wherever an audience is expected.
+    expect(oauth.verifyAccessToken(token, OURS)).toBeUndefined();
   });
 
   test("no expected resources configured means no audience check", async () => {
     // MCP_PUBLIC_URL unset: the server cannot name itself, so it cannot judge.
-    const token = await tokenBoundTo("https://someone-else.example.com/mcp");
+    const token = await tokenBoundTo("https://mcp.example.com/mcp");
     expect(oauth.verifyAccessToken(token, [])).toBeDefined();
     expect(oauth.verifyAccessToken(token)).toBeDefined();
   });
@@ -1481,5 +1523,112 @@ describe("client must still be registered at redemption", () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "invalid_grant" });
+  });
+});
+
+describe("MCP_ADMIN_CLIENT_IDS", () => {
+  afterEach(() => { delete process.env.MCP_ADMIN_CLIENT_IDS; });
+
+  function beginFor(clientId: string, resource: string): Promise<Response> {
+    return oauth.beginAuthorize(
+      authorizeRequest({
+        client_id: clientId,
+        redirect_uri: "https://pin.example.com/cb",
+        code_challenge: s256("v"),
+        code_challenge_method: "S256",
+        resource,
+      }),
+      testConfig,
+    );
+  }
+
+  test("an unlisted client cannot start an admin authorization", async () => {
+    const clientId = await register("https://pin.example.com/cb");
+    process.env.MCP_ADMIN_CLIENT_IDS = "vmhq_someone_else";
+    const res = await beginFor(clientId, "https://mcp.example.com/mcp");
+    expect(res.status).toBe(400);
+    const html = await res.text();
+    expect(html).toContain("may not use the admin endpoint");
+    expect(html).toContain(clientId);
+  });
+
+  test("an unlisted client can still ask for the read endpoint", async () => {
+    const clientId = await register("https://pin.example.com/cb");
+    process.env.MCP_ADMIN_CLIENT_IDS = "vmhq_someone_else";
+    expect((await beginFor(clientId, "https://mcp.example.com/mcp/read")).status).toBe(200);
+  });
+
+  test("a listed client gets the admin endpoint, and is never aged out", async () => {
+    const { clients, CLIENT_TTL_MS } = await import("../src/oauth/state.js");
+    const clientId = await register("https://pin.example.com/cb");
+    process.env.MCP_ADMIN_CLIENT_IDS = clientId;
+    expect((await beginFor(clientId, "https://mcp.example.com/mcp")).status).toBe(200);
+
+    clients.get(clientId)!.clientIdIssuedAt = Math.floor((Date.now() - CLIENT_TTL_MS - 1000) / 1000);
+    oauth.pruneExpiredOAuthState();
+    expect(clients.has(clientId)).toBe(true);
+  });
+
+  test("unset keeps every client eligible", async () => {
+    const clientId = await register("https://pin.example.com/cb");
+    expect((await beginFor(clientId, "https://mcp.example.com/mcp")).status).toBe(200);
+  });
+});
+
+describe("pending authorizations", () => {
+  test("are capped per client, oldest first", async () => {
+    const { pendingAuth, MAX_PENDING_AUTH_PER_CLIENT } = await import("../src/oauth/state.js");
+    pendingAuth.clear();
+    const clientId = await register("https://pending.example.com/cb");
+    for (let i = 0; i < MAX_PENDING_AUTH_PER_CLIENT + 2; i++) {
+      await oauth.beginAuthorize(
+        authorizeRequest({ client_id: clientId, redirect_uri: "https://pending.example.com/cb", code_challenge: s256(`v${i}`), code_challenge_method: "S256" }),
+        testConfig,
+      );
+    }
+    const mine = [...pendingAuth.values()].filter((p) => p.clientId === clientId);
+    expect(mine.length).toBe(MAX_PENDING_AUTH_PER_CLIENT);
+    // The survivors are the newest ones.
+    expect(mine.at(-1)!.codeChallenge).toBe(s256(`v${MAX_PENDING_AUTH_PER_CLIENT + 1}`));
+  });
+
+  test("are capped in total", async () => {
+    const { pendingAuth, admitPendingAuth } = await import("../src/oauth/state.js");
+    pendingAuth.clear();
+    for (let i = 0; i < 5; i++) {
+      admitPendingAuth(`c${i}`, { total: 3, perClient: 3 });
+      pendingAuth.set(`t${i}`, { clientId: `c${i}`, redirectUri: "x", codeChallenge: "x", state: "", scopes: [], pkceVerifier: "v", expiresAt: Date.now() + 60_000 });
+    }
+    expect([...pendingAuth.keys()]).toEqual(["t2", "t3", "t4"]);
+  });
+
+  test("are never written to disk, so an anonymous authorize costs no write", async () => {
+    const { pendingAuth } = await import("../src/oauth/state.js");
+    const clientId = await register("https://pending.example.com/cb");
+    const before = readFileSync(statePath, "utf-8");
+    const res = await oauth.beginAuthorize(
+      authorizeRequest({ client_id: clientId, redirect_uri: "https://pending.example.com/cb", code_challenge: s256("w"), code_challenge_method: "S256" }),
+      testConfig,
+    );
+    expect(res.status).toBe(200);
+    expect(pendingAuth.size).toBeGreaterThan(0);
+    const after = readFileSync(statePath, "utf-8");
+    expect(after).toBe(before);
+    expect(JSON.parse(after).pendingAuth).toBeUndefined();
+  });
+
+  test("do not keep a client from being evicted to make room", async () => {
+    const { clients, pendingAuth, refreshTokens, accessTokens, codes, reserveClientSlot } = await import("../src/oauth/state.js");
+    clients.clear();
+    refreshTokens.clear();
+    accessTokens.clear();
+    codes.clear();
+    pendingAuth.clear();
+    for (let i = 0; i < 3; i++) {
+      clients.set(`p${i}`, { clientId: `p${i}`, clientIdIssuedAt: 1000 + i, redirectUris: ["http://localhost/cb"] });
+      pendingAuth.set(`t${i}`, { clientId: `p${i}`, redirectUri: "http://localhost/cb", codeChallenge: "x", state: "", scopes: [], pkceVerifier: "v", expiresAt: Date.now() + 60_000 });
+    }
+    expect(reserveClientSlot(3)).toBe(true);
+    expect(clients.has("p0")).toBe(false);
   });
 });

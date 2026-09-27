@@ -32,6 +32,8 @@ beforeAll(async () => {
     env: {
       ...process.env,
       MCP_ACCESS_TOKEN: TOKEN,
+      // /docs takes the admin audience; the tier rules have their own suite.
+      MCP_STATIC_TOKEN_TIER: "admin",
       MCP_PORT: String(port),
       MCP_LOG_LEVEL: "silent",
       MCP_OAUTH_STATE_PATH: statePath,

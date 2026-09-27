@@ -12,9 +12,12 @@
 import { randomBytes } from "node:crypto";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { log } from "../logger.js";
+import { ADMIN_MCP_PATH, READ_MCP_PATH } from "../mcpEndpoints.js";
+import { isAdminClient } from "./adminClients.js";
 import {
   accessTokens,
   actorFor,
+  admitPendingAuth,
   clients,
   codes,
   CODE_TTL_MS,
@@ -98,6 +101,15 @@ function baseUrl(config: OAuthConfig, req: Request): string {
 
 export function mcpUrl(config: OAuthConfig, req: Request): string {
   return `${baseUrl(config, req)}/mcp`;
+}
+
+/**
+ * The two resources this server issues tokens for (RFC 8707). Every token is
+ * bound to one of them, and the tier it opens follows from which.
+ */
+function ownResources(config: OAuthConfig, req: Request): { admin: string; read: string } {
+  const root = baseUrl(config, req);
+  return { admin: `${root}${ADMIN_MCP_PATH}`, read: `${root}${READ_MCP_PATH}` };
 }
 
 /** Redirect URI registered with PocketID for this server (the OIDC callback). */
@@ -284,6 +296,21 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     }
   }
 
+  // Every token names the endpoint it opens. A request for some other server's
+  // resource is refused rather than minted into a token nothing here accepts,
+  // and a request that names none gets the read tier: RFC 8707 makes the
+  // parameter optional, and an unbound token used to open /mcp as well.
+  const own = ownResources(config, req);
+  const boundResource = resource
+    ? [own.admin, own.read].find((candidate) => resourceMatches(resource, candidate))
+    : own.read;
+  if (!boundResource) {
+    log("error", "oauth_authorize_foreign_resource", { resource });
+    return renderAuthorizeError(
+      `This server only issues tokens for its own MCP endpoints: ${own.admin} or ${own.read}.`,
+    );
+  }
+
   // 1. Client must exist and redirect URI must be registered (port-agnostic for loopback)
   const client = clients.get(clientId);
   if (!client) {
@@ -312,12 +339,26 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     return renderAuthorizeError("PKCE validation failed. The client must use the S256 code challenge method.");
   }
 
-  // 3. Stash the pending request and redirect the user to PocketID
+  // 3. The admin tier is a root shell on the hypervisor. Registration is
+  // public, so a client registered minutes ago by someone else can send the
+  // one person who can sign in a perfectly ordinary looking consent link.
+  // With MCP_ADMIN_CLIENT_IDS set, only the clients listed there can ask.
+  if (boundResource === own.admin && !isAdminClient(clientId)) {
+    log("error", "oauth_admin_client_not_pinned", { clientId, redirectHost: redirectTargetLabel(redirectUri) });
+    return renderAuthorizeError(
+      `This client may not use the admin endpoint. If it is your own client, add ${clientId} to MCP_ADMIN_CLIENT_IDS and connect again. If you did not start this connection yourself, stop here.`,
+    );
+  }
+
+  // 4. Stash the pending request and show the consent page. Pending
+  // transactions live in memory only: this handler is public, and it used to
+  // rewrite the whole state file on every call.
   pruneExpiredOAuthState();
 
   const txn = randomBytes(24).toString("base64url");
   const browserSecret = randomBytes(32).toString("base64url");
   const pkceVerifier = randomBytes(32).toString("base64url");
+  admitPendingAuth(clientId);
   pendingAuth.set(txn, {
     browserHash: sha256(browserSecret),
     approved: false,
@@ -326,11 +367,10 @@ export async function beginAuthorize(req: Request, config: OAuthConfig): Promise
     codeChallenge,
     state,
     scopes: scope.split(/\s+/).filter(Boolean),
-    resource: resource || undefined,
+    resource: boundResource,
     pkceVerifier,
     expiresAt: Date.now() + PENDING_TTL_MS,
   });
-  saveState();
 
   const response = renderAuthorizeConsent(txn, {
     redirectUri,
@@ -365,7 +405,6 @@ export async function approveAuthorize(req: Request, config: OAuthConfig): Promi
     return renderAuthorizeError("Invalid or expired consent transaction.");
   }
   pending.approved = true;
-  saveState();
   let authUrl: string;
   try {
     authUrl = await buildPocketIdAuthUrl(config.pocketId, callbackUri(config, req), {
@@ -374,7 +413,6 @@ export async function approveAuthorize(req: Request, config: OAuthConfig): Promi
     });
   } catch (err) {
     pendingAuth.delete(txn);
-    saveState();
     log("error", "oauth_pocketid_discovery_failed", {
       error: err instanceof Error ? err.message : String(err),
     });
@@ -408,7 +446,7 @@ export async function oauthCallback(req: Request, config: OAuthConfig): Promise<
   if (!pending?.approved || !browserMatches(req, txn, pending.browserHash)) {
     return renderAuthorizeError("Consent is missing, expired or belongs to a different browser.");
   }
-  if (pending) { pendingAuth.delete(txn); saveState(); }
+  if (pending) pendingAuth.delete(txn);
 
   if (!pending || pending.expiresAt < Date.now()) {
     log("error", "oauth_callback_unknown_transaction", {});
@@ -588,7 +626,7 @@ export async function exchangeToken(req: Request): Promise<Response> {
     return oauthError("invalid_grant");
   }
   // RFC 8707: if resource was bound at authorize time it must match token request
-  if (ac.resource && resource && ac.resource !== resource) {
+  if (ac.resource && resource && !resourceMatches(resource, ac.resource)) {
     return oauthError("invalid_target");
   }
 
@@ -745,9 +783,13 @@ function resourceMatches(tokenResource: string, expected: string): boolean {
  *
  * `expectedResources` are the resource identifiers this server answers for. A
  * token carrying a `resource` must name one of them: without the check, a token
- * this server issued for a different audience would still open /mcp. Tokens
- * with no `resource` — everything issued before RFC 8707 was honoured, and any
- * client that does not send the parameter — are unaffected.
+ * this server issued for a different audience would still open /mcp.
+ *
+ * Tokens with no `resource` were issued before every token was bound to an
+ * endpoint. They are judged as if bound to `unboundResource` (the read
+ * endpoint, from index.ts), so they keep working there and no longer open the
+ * admin tier. Without an `unboundResource` they are refused whenever an
+ * audience is expected at all.
  *
  * A token with no identity is refused: everything reachable through it is
  * logged by actor, and "legacy" is not an actor. Such tokens predate identity
@@ -756,7 +798,11 @@ function resourceMatches(tokenResource: string, expected: string): boolean {
  * re-checked on refresh: a person removed from it should lose access now, not
  * when their token happens to expire.
  */
-export function verifyAccessToken(token: string, expectedResources?: string[]): AuthInfo | undefined {
+export function verifyAccessToken(
+  token: string,
+  expectedResources?: string[],
+  unboundResource?: string,
+): AuthInfo | undefined {
   if (!token) return undefined;
   const hash = sha256(token);
   const stored = accessTokens.get(hash);
@@ -787,12 +833,13 @@ export function verifyAccessToken(token: string, expectedResources?: string[]): 
     }
   }
 
-  if (stored.resource && expectedResources && expectedResources.length > 0) {
-    if (!expectedResources.some((expected) => resourceMatches(stored.resource!, expected))) {
+  const audience = stored.resource ?? unboundResource;
+  if (expectedResources && expectedResources.length > 0) {
+    if (!audience || !expectedResources.some((expected) => resourceMatches(audience, expected))) {
       log("error", "oauth_token_resource_mismatch", {
         clientId: stored.clientId,
         actor: actorFor(stored.identity),
-        tokenResource: stored.resource,
+        tokenResource: stored.resource ?? "unbound",
       });
       return undefined;
     }

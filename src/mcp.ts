@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
+import type { ToolTier } from "./mcpEndpoints.js";
 import { buildUrl, callService, interpolatePath } from "./serviceClient.js";
 import {
   assertShellAllowed,
@@ -27,7 +28,7 @@ import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMe
  * reach a root shell or a state-changing API. Chosen per endpoint in index.ts,
  * not per request.
  */
-export type ToolTier = "read" | "admin";
+export type { ToolTier };
 
 /**
  * Who is making this request and under which request id. Threaded into every

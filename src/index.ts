@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { createMcpServer, type ToolTier } from "./mcp.js";
+import { createMcpServer } from "./mcp.js";
+import { ADMIN_MCP_PATH, MCP_ENDPOINTS, READ_MCP_PATH, staticTokenOpens, type ToolTier } from "./mcpEndpoints.js";
 import { loadConfig } from "./config.js";
 import { log } from "./logger.js";
 import { generateOpenApiSpec, renderSwaggerUI, SWAGGER_UI_CSP } from "./openapi.js";
@@ -11,6 +12,7 @@ import {
   listSessions,
   constantTimeEqual,
   exchangeToken,
+  isAdminClient,
   OAUTH_CORS_HEADERS,
   oauthCallback,
   protectedResourceMetadata,
@@ -113,21 +115,6 @@ async function handleMcp(req: Request, authInfo: AuthInfo | undefined, requestId
   }
 }
 
-/**
- * The MCP endpoints, and the tool tier each one hands out.
- *
- * `/mcp` keeps every tool, so existing clients are unaffected. `/mcp/read` is
- * the endpoint to point a day-to-day client at: same services, same auth, but
- * no Proxmox shell. Everything this server reads (search results, RSS articles,
- * bookmarks) is text written by someone else that lands in the same model
- * context as the tool list, so a session that only reads should not also be
- * holding a root shell on the hypervisor.
- */
-const MCP_ENDPOINTS: Record<string, ToolTier> = {
-  "/mcp": "admin",
-  "/mcp/read": "read",
-};
-
 const AUTHENTICATED_PATHS = new Set([...Object.keys(MCP_ENDPOINTS), "/openapi.json", "/docs"]);
 
 /**
@@ -146,6 +133,14 @@ function expectedResources(path: string): string[] {
     .map(([adminPath]) => `${root}${adminPath}`);
   return path in MCP_ENDPOINTS && MCP_ENDPOINTS[path] === "admin" ? admin : [...admin, `${root}${path}`];
 }
+
+/**
+ * Audience assumed for a token issued before every token was bound to an
+ * endpoint: the read one, so such a token keeps working there and nowhere else.
+ */
+const UNBOUND_TOKEN_RESOURCE = config.publicUrl
+  ? `${config.publicUrl.replace(/\/$/, "")}${READ_MCP_PATH}`
+  : undefined;
 
 const httpServer = Bun.serve({
   port: config.port,
@@ -278,10 +273,26 @@ const httpServer = Bun.serve({
     }
 
     const token = bearerToken(req);
-    const isStaticToken = constantTimeEqual(token, config.accessToken);
     // /openapi.json and /docs describe every service, so they take the admin audience.
-    const resourcePath = url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp";
-    const oauthInfo = isStaticToken ? undefined : verifyAccessToken(token, expectedResources(resourcePath));
+    const resourcePath = url.pathname in MCP_ENDPOINTS ? url.pathname : ADMIN_MCP_PATH;
+    const routeTier = MCP_ENDPOINTS[resourcePath] ?? "admin";
+    // With the static token switched off, config.accessToken is empty, and an
+    // empty bearer must not compare equal to it.
+    const isStaticToken =
+      config.staticTokenTier !== "off" &&
+      token !== "" &&
+      constantTimeEqual(token, config.accessToken) &&
+      staticTokenOpens(config.staticTokenTier, routeTier);
+    let oauthInfo = isStaticToken
+      ? undefined
+      : verifyAccessToken(token, expectedResources(resourcePath), UNBOUND_TOKEN_RESOURCE);
+
+    // A pinned admin client list also applies to sessions issued before it was
+    // set, so pinning cuts an unexpected client off at once, not at expiry.
+    if (oauthInfo && routeTier === "admin" && !isAdminClient(oauthInfo.clientId)) {
+      log("error", "oauth_admin_client_not_pinned", { clientId: oauthInfo.clientId, path: url.pathname, requestId });
+      oauthInfo = undefined;
+    }
 
     if (!isStaticToken && !oauthInfo) {
       // A failed attempt burns a much narrower budget than a successful call,
@@ -290,7 +301,7 @@ const httpServer = Bun.serve({
         return secureResponse(rateLimited(req, "mcp_auth_failure", ipOpts));
       }
       return secureResponse(
-        unauthorized(oauthConfig, req, url.pathname in MCP_ENDPOINTS ? url.pathname : "/mcp"),
+        unauthorized(oauthConfig, req, resourcePath),
       );
     }
 
@@ -314,7 +325,7 @@ const httpServer = Bun.serve({
       );
     }
 
-    const response = await handleMcp(req, oauthInfo, requestId, MCP_ENDPOINTS[url.pathname] ?? "admin");
+    const response = await handleMcp(req, oauthInfo, requestId, routeTier);
     log("info", "mcp_request_finished", {
       method: req.method,
       path: url.pathname,

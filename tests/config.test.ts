@@ -121,7 +121,7 @@ describe("loadProxmoxSshConfig", () => {
  * so a public issuer reached over cleartext hands them to the network.
  */
 describe("POCKETID_ISSUER transport", () => {
-  const VARS = ["POCKETID_ISSUER", "POCKETID_CLIENT_ID", "POCKETID_CLIENT_SECRET"] as const;
+  const VARS = ["POCKETID_ISSUER", "POCKETID_CLIENT_ID", "POCKETID_CLIENT_SECRET", "MCP_PUBLIC_URL"] as const;
 
   afterEach(() => {
     for (const name of VARS) delete process.env[name];
@@ -129,6 +129,7 @@ describe("POCKETID_ISSUER transport", () => {
 
   function withIssuer(issuer: string): void {
     process.env.MCP_ACCESS_TOKEN = "x".repeat(48);
+    process.env.MCP_PUBLIC_URL = "https://mcp.example.com";
     process.env.POCKETID_ISSUER = issuer;
     process.env.POCKETID_CLIENT_ID = "mcp";
     process.env.POCKETID_CLIENT_SECRET = "secret";
@@ -154,5 +155,55 @@ describe("POCKETID_ISSUER transport", () => {
   test("rejects an issuer that is not a URL at all", () => {
     withIssuer("not-a-url");
     expect(() => loadConfig()).toThrow("not a valid URL");
+  });
+});
+
+describe("MCP_PUBLIC_URL with PocketID", () => {
+  const VARS = ["POCKETID_ISSUER", "POCKETID_CLIENT_ID", "POCKETID_CLIENT_SECRET", "MCP_PUBLIC_URL"] as const;
+  afterEach(() => {
+    for (const name of VARS) delete process.env[name];
+  });
+
+  test("is required, because tokens are bound to the endpoints it names", () => {
+    process.env.MCP_ACCESS_TOKEN = "x".repeat(48);
+    process.env.POCKETID_ISSUER = "https://id.example.com";
+    process.env.POCKETID_CLIENT_ID = "mcp";
+    process.env.POCKETID_CLIENT_SECRET = "secret";
+    expect(() => loadConfig()).toThrow("MCP_PUBLIC_URL is required");
+    process.env.MCP_PUBLIC_URL = "https://mcp.example.com";
+    expect(() => loadConfig()).not.toThrow();
+  });
+});
+
+describe("MCP_STATIC_TOKEN_TIER", () => {
+  afterEach(() => {
+    delete process.env.MCP_STATIC_TOKEN_TIER;
+  });
+
+  test("defaults to the read endpoint", () => {
+    process.env.MCP_ACCESS_TOKEN = "x".repeat(48);
+    expect(loadConfig().staticTokenTier).toBe("read");
+  });
+
+  test("off makes MCP_ACCESS_TOKEN optional and leaves nothing to compare against", () => {
+    delete process.env.MCP_ACCESS_TOKEN;
+    process.env.MCP_STATIC_TOKEN_TIER = "off";
+    const config = loadConfig();
+    expect(config.staticTokenTier).toBe("off");
+    expect(config.accessToken).toBe("");
+  });
+
+  test("admin and read still require a strong token", () => {
+    delete process.env.MCP_ACCESS_TOKEN;
+    for (const tier of ["admin", "read"]) {
+      process.env.MCP_STATIC_TOKEN_TIER = tier;
+      expect(() => loadConfig()).toThrow("MCP_ACCESS_TOKEN");
+    }
+  });
+
+  test("rejects an unknown value", () => {
+    process.env.MCP_ACCESS_TOKEN = "x".repeat(48);
+    process.env.MCP_STATIC_TOKEN_TIER = "root";
+    expect(() => loadConfig()).toThrow("MCP_STATIC_TOKEN_TIER");
   });
 });
