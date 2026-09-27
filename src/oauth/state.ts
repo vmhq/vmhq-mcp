@@ -186,7 +186,6 @@ export const MAX_REGISTERED_CLIENTS = 200;
 export const MAX_PENDING_AUTH = 100;
 export const MAX_PENDING_AUTH_PER_CLIENT = 3;
 
-
 /**
  * Clients outlive their tokens: prune 30 days after the longest-lived
  * credential they can hold. Measured against the refresh TTL, not the access
@@ -339,6 +338,10 @@ function clientsWithCredentials(): Set<string> {
  * oldest ones first: that client's own beyond MAX_PENDING_AUTH_PER_CLIENT, then
  * anyone's beyond MAX_PENDING_AUTH. Map order is insertion order, so the first
  * match is always the oldest.
+ *
+ * The global pass skips clients pinned in MCP_ADMIN_CLIENT_IDS, so flooding
+ * /oauth/authorize cannot push the owner's own sign-in out mid-flow. Their
+ * entries stay bounded by the per-client cap.
  */
 export function admitPendingAuth(
   clientId: string,
@@ -348,8 +351,10 @@ export function admitPendingAuth(
   for (const [txn] of own.slice(0, Math.max(0, own.length - limits.perClient + 1))) {
     pendingAuth.delete(txn);
   }
-  for (const txn of pendingAuth.keys()) {
+  const pinned = adminClientIds();
+  for (const [txn, pending] of pendingAuth) {
     if (pendingAuth.size < limits.total) break;
+    if (pinned.includes(pending.clientId)) continue;
     pendingAuth.delete(txn);
   }
 }

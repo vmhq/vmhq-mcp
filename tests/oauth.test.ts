@@ -1616,6 +1616,23 @@ describe("pending authorizations", () => {
     expect([...pendingAuth.keys()]).toEqual(["t2", "t3", "t4"]);
   });
 
+  test("a flood cannot push out a pinned client's sign-in", async () => {
+    const { pendingAuth, admitPendingAuth } = await import("../src/oauth/state.js");
+    pendingAuth.clear();
+    process.env.MCP_ADMIN_CLIENT_IDS = "mine";
+    try {
+      pendingAuth.set("own", { clientId: "mine", redirectUri: "x", codeChallenge: "x", state: "", scopes: [], pkceVerifier: "v", expiresAt: Date.now() + 60_000 });
+      for (let i = 0; i < 10; i++) {
+        admitPendingAuth(`flood${i}`, { total: 3, perClient: 3 });
+        pendingAuth.set(`f${i}`, { clientId: `flood${i}`, redirectUri: "x", codeChallenge: "x", state: "", scopes: [], pkceVerifier: "v", expiresAt: Date.now() + 60_000 });
+      }
+      expect(pendingAuth.has("own")).toBe(true);
+      expect(pendingAuth.size).toBe(3);
+    } finally {
+      delete process.env.MCP_ADMIN_CLIENT_IDS;
+    }
+  });
+
   test("are never written to disk, so an anonymous authorize costs no write", async () => {
     const { pendingAuth } = await import("../src/oauth/state.js");
     const clientId = await register("https://pending.example.com/cb");
