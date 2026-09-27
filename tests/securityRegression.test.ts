@@ -61,3 +61,33 @@ test("OIDC refuses a different discovery issuer and insecure endpoints", async (
     }
   } finally { globalThis.fetch = original; resetPocketIdDiscoveryCache(); }
 });
+
+test("read-tier tools send the read-only credential and drop non-read headers", async () => {
+  const original = globalThis.fetch;
+  const seen: Array<{ auth: string | null; custom: string | null }> = [];
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    seen.push({ auth: headers.get("authorization"), custom: headers.get("x-custom") });
+    return Response.json({ ok: true });
+  }) as unknown as typeof fetch;
+  const proxmox: ServiceDefinition = {
+    id: "proxmox", title: "Proxmox", baseUrl: "https://pve.example:8006", defaultPathPrefix: "/api2/json",
+    auth: { type: "static", headerName: "Authorization", value: "PVEAPIToken=admin" },
+    readAuth: { type: "static", headerName: "Authorization", value: "PVEAPIToken=auditor" },
+  };
+  try {
+    for (const tier of ["read", "admin"] as const) {
+      const server = createMcpServer({ services: [proxmox], iconUrl: "https://example.com/icon.svg", tier });
+      const client = new Client({ name: "security-test", version: "1" });
+      const [ct, st] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(st), client.connect(ct)]);
+      try {
+        await client.callTool({ name: "proxmox_request", arguments: { method: "GET", path: "/api2/json/version", headers: { "X-Custom": "1" } } });
+      } finally { await client.close(); await server.close(); }
+    }
+    expect(seen).toEqual([
+      { auth: "PVEAPIToken=auditor", custom: null },
+      { auth: "PVEAPIToken=admin", custom: "1" },
+    ]);
+  } finally { globalThis.fetch = original; }
+});

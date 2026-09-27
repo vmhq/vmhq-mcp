@@ -148,3 +148,30 @@ describe("isPrivateHost", () => {
     }
   });
 });
+
+describe("proxmox read-only token", () => {
+  const baseEnv = {
+    PROXMOX_BASE_URL: "https://192.168.3.10:8006",
+    PROXMOX_TOKEN_ID: "root@pam!mcp",
+    PROXMOX_TOKEN_SECRET: "secret",
+  };
+
+  test("is absent unless configured", () => {
+    const service = serviceFromRegistryEntry(entryFor("proxmox"), makeReadEnv(baseEnv));
+    expect(service?.readAuth).toBeUndefined();
+  });
+
+  test("becomes the read tier's credential when both halves are set", () => {
+    const service = serviceFromRegistryEntry(
+      entryFor("proxmox"),
+      makeReadEnv({ ...baseEnv, PROXMOX_READ_TOKEN_ID: "mcp@pve!audit", PROXMOX_READ_TOKEN_SECRET: "ro" }),
+    );
+    expect(service?.readAuth).toEqual({ type: "static", headerName: "Authorization", value: "PVEAPIToken=mcp@pve!audit=ro" });
+  });
+
+  test("refuses half a token", () => {
+    expect(() =>
+      serviceFromRegistryEntry(entryFor("proxmox"), makeReadEnv({ ...baseEnv, PROXMOX_READ_TOKEN_ID: "mcp@pve!audit" })),
+    ).toThrow("PROXMOX_READ_TOKEN_ID and PROXMOX_READ_TOKEN_SECRET must be configured together.");
+  });
+});
