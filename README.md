@@ -37,7 +37,7 @@ The MCP endpoint is available at:
 http://localhost:3010/mcp
 ```
 
-The server also exposes an OpenAPI 3.0.3 specification and an interactive Swagger UI for discovering the available tools and endpoints. These endpoints are protected by the same `MCP_ACCESS_TOKEN` (Bearer auth) as the main `/mcp` endpoint:
+The server also exposes an OpenAPI 3.0.3 specification and an interactive Swagger UI for discovering the available tools and endpoints. These endpoints require the same credentials as the admin `/mcp` endpoint (an admin-tier OAuth token, or `MCP_ACCESS_TOKEN` with `MCP_STATIC_TOKEN_TIER=admin`):
 
 - `GET /openapi.json` — Live OpenAPI specification scoped to currently configured services.
 - `GET /docs` — Interactive Swagger UI.
@@ -84,10 +84,16 @@ MCP_PUBLIC_URL=https://mcp.example.com
 # Generate one with: openssl rand -base64 48
 MCP_ACCESS_TOKEN=change-me
 
+# How far MCP_ACCESS_TOKEN reaches: read (default, /mcp/read only), admin
+# (/mcp too, plus /openapi.json and /docs) or off (never authenticates, and
+# MCP_ACCESS_TOKEN becomes optional). The static token never expires and names
+# no one, so keep it off the admin tier unless a client needs it there.
+# MCP_STATIC_TOKEN_TIER=read
+
 # PocketID identity provider (interactive OAuth login)
 # When all three are set, the OAuth authorize flow delegates user authentication
-# to your PocketID instance. The static MCP_ACCESS_TOKEN bearer keeps working
-# for machine-to-machine access. In PocketID, create an OIDC client and register
+# to your PocketID instance (MCP_PUBLIC_URL is then required). The static
+# MCP_ACCESS_TOKEN bearer keeps working as MCP_STATIC_TOKEN_TIER allows. In PocketID, create an OIDC client and register
 # this redirect/callback URI: <MCP_PUBLIC_URL>/oauth/callback
 # Restrict who can sign in via the OIDC client's allowed groups in PocketID.
 POCKETID_ISSUER=https://id.example.com
@@ -116,6 +122,10 @@ ADGUARD_PASSWORD=
 # Token ID format: USER@REALM!TOKENID
 PROXMOX_TOKEN_ID=root@pam!mcp
 PROXMOX_TOKEN_SECRET=
+# Optional second token used by the read tier (/mcp/read) instead of the one
+# above. Give it only the PVEAuditor role, so Proxmox itself refuses writes.
+# PROXMOX_READ_TOKEN_ID=mcp@pve!audit
+# PROXMOX_READ_TOKEN_SECRET=
 # Skip TLS verification for Proxmox only (self-signed PVE cluster CA on :8006).
 # Only accepted when PROXMOX_BASE_URL points at a private-network host.
 # PROXMOX_INSECURE_TLS=true
@@ -178,7 +188,16 @@ MINIFLUX_AUTH_MODE=x-auth-token
 # Comma-separated OIDC subjects or emails allowed to sign in. Unset means
 # PocketID's own per-client group restriction is the only gate. Re-checked on
 # every request and refresh, so removing someone here ends their session.
-# MCP_ALLOWED_SUBJECTS=vicente@example.com
+# Prefer the subject (vmhq_sessions lists it): an email only matches when
+# PocketID asserts email_verified.
+# MCP_ALLOWED_SUBJECTS=3f2b8c1e-0000-0000-0000-000000000000
+
+# Comma-separated OAuth client ids allowed to use /mcp (the admin tier, with the
+# Proxmox shell). Registration is public, so without this any client that
+# completes a sign-in can obtain an admin token. Connect your client once: the
+# error page (or the oauth_admin_client_not_pinned log line) names its id.
+# Listed clients are never aged out. Strongly recommended.
+# MCP_ADMIN_CLIENT_IDS=vmhq_xxxxxxxxxxxxxxxxxxxxxxxx
 
 # Access token lifetime in seconds (default 86400 = 24h). Clients renew with a
 # refresh token, which rotates on every use.
@@ -214,11 +233,11 @@ Remote configuration example:
 
 ```toml
 [mcp_servers.vmhq]
-url = "https://mcp.example.com/mcp"
+url = "https://mcp.example.com/mcp/read"
 bearer_token_env_var = "VMHQ_MCP_ACCESS_TOKEN"
 ```
 
-The value of `VMHQ_MCP_ACCESS_TOKEN` must match `MCP_ACCESS_TOKEN` on the server. `MCP_PUBLIC_URL` is optional for running the server, but it documents and exposes the public URL that MCP clients should use, visible at `/health`.
+The value of `VMHQ_MCP_ACCESS_TOKEN` must match `MCP_ACCESS_TOKEN` on the server. The static token opens `/mcp/read` by default; pointing Codex at `/mcp` needs `MCP_STATIC_TOKEN_TIER=admin`. `MCP_PUBLIC_URL` is optional for running the server, but it documents and exposes the public URL that MCP clients should use, visible at `/health`.
 
 ### Personal Codex marketplace
 
@@ -258,7 +277,9 @@ When you click **Authorize**, the server redirects you to your **PocketID** inst
 
 Claude.ai registers `https://claude.ai/api/mcp/auth_callback` as its web redirect URI. Older clients may send `https://claude.ai/callback`; the server maps that alias to the canonical callback automatically.
 
-`MCP_ACCESS_TOKEN` is still available as a direct bearer token for clients that support it (e.g. `curl` testing or Codex-style configurations). Do not paste it into Claude's advanced OAuth Client ID/Secret fields.
+`MCP_ACCESS_TOKEN` is still available as a direct bearer token for clients that support it (e.g. `curl` testing). By default it only opens `/mcp/read`; `MCP_STATIC_TOKEN_TIER=admin` extends it to `/mcp`, and `off` disables it. Do not paste it into Claude's advanced OAuth Client ID/Secret fields.
+
+To keep a stranger's client from obtaining the admin tier, set `MCP_ADMIN_CLIENT_IDS` to your own client's id. Connect the admin connector once: the error page names the client id to add. Then restart and connect again.
 
 ### PocketID setup
 
@@ -378,11 +399,20 @@ root shell. On `/mcp/read` those tools are never registered, so there is nothing
 for such an instruction to call.
 
 Point your day-to-day client at `/mcp/read`, and add a second connector on
-`/mcp` for the sessions where you actually maintain the node. A token the
-client bound to `/mcp/read` (RFC 8707 `resource`) is accepted there and nowhere
-else, so a token that leaks from the day-to-day client does not open the admin
-tier; a token bound to `/mcp` works on both. `vmhq_status` reports which tier
-it is running under.
+`/mcp` for the sessions where you actually maintain the node. Every token is
+bound to one endpoint (RFC 8707 `resource`): one bound to `/mcp/read` is
+accepted there and nowhere else, so a token that leaks from the day-to-day
+client does not open the admin tier; one bound to `/mcp` works on both. A client
+that sends no `resource` gets a `/mcp/read` token, a `resource` naming another
+server is refused, and tokens issued before this binding existed count as
+`/mcp/read` tokens. With `MCP_ADMIN_CLIENT_IDS` set, only the listed clients can
+obtain or use a `/mcp` token. `vmhq_status` reports which tier it is running
+under.
+
+The read tier forwards only `Accept`, `Accept-Language`, `If-None-Match`,
+`If-Modified-Since` and `Range` from the caller's headers, and uses
+`PROXMOX_READ_TOKEN_ID` / `PROXMOX_READ_TOKEN_SECRET` for Proxmox when they are
+set, so a read-only upstream credential backs the tier as well.
 
 **These tools are a real shell on the hypervisor.** Anyone who can call `/mcp` can run anything the SSH user can run — that is the point when the agent is the node's maintainer, but it means the SSH credential, not the tool surface, is the security boundary. Recommended setup:
 
@@ -405,7 +435,7 @@ The `*_request` tools accept:
 - `path`: relative path within the service, e.g. `/api/v1/entries`.
 - `query`: optional query parameters.
 - `body`: optional JSON body.
-- `headers`: optional additional headers, filtered to prevent overriding auth headers.
+- `headers`: optional additional headers. Credentials, method overrides (`X-HTTP-Method-Override`) and forwarding headers (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`) are dropped; on `/mcp/read` only content negotiation and caching headers pass.
 
 The response returns the status code, useful response headers, and the body as text or JSON.
 
@@ -425,6 +455,10 @@ The local catalogue was built from the official documentation reviewed on 2026-0
 - Proxmox VE API viewer/docs: https://pve.proxmox.com/pve-docs/api-viewer/index.html
 - Memos API latest: https://usememos.com/docs/api/latest
 - AdGuard Home API (OpenAPI spec): https://github.com/AdguardTeam/AdGuardHome/tree/master/openapi
+
+## Security changes (2026-09-27)
+
+Every OAuth token is bound to `/mcp` or `/mcp/read`; unbound tokens (older ones, or clients that send no `resource`) only open `/mcp/read`, so connectors on `/mcp` must reconnect once. `MCP_PUBLIC_URL` is required with PocketID. `MCP_ADMIN_CLIENT_IDS` pins which clients may use the admin tier. The static token defaults to `/mcp/read` (`MCP_STATIC_TOKEN_TIER`). Pending sign-ins live in memory and are capped, so a restart mid-login means signing in again. Allowlisted emails only match when verified; prefer the subject. See [SECURITY_REMEDIATION.md](SECURITY_REMEDIATION.md).
 
 ## Security changes (2026-09-04)
 

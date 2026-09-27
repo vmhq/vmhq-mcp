@@ -2,9 +2,9 @@
   "mcpServers": {
     "vmhq": {
       "type": "http",
-      "url": "https://mcp.vmhq.cl/mcp",
+      "url": "https://mcp.vmhq.cl/mcp/read",
       "bearer_token_env_var": "VMHQ_MCP_API_KEY",
-      "note": "Personal VMHQ MCP endpoint. Set VMHQ_MCP_API_KEY locally to the same value as MCP_ACCESS_TOKEN on the server."
+      "note": "Personal VMHQ MCP endpoint. Set VMHQ_MCP_API_KEY locally to the same value as MCP_ACCESS_TOKEN on the server. The static token opens /mcp/read unless MCP_STATIC_TOKEN_TIER=admin."
     }
   }
 }
