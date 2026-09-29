@@ -14,7 +14,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "jose": "^6.2.10",
     "ssh2": "^1.17.0",
-    "zod": "^3.25.76"
+    "zod": "^4.6.5"
   },
   "overrides": {
     "hono": "^4.13.5",
