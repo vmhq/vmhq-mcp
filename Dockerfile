@@ -1,6 +1,6 @@
 # Pinned by digest so a rebuild cannot pick up a different image under the
 # same tag; Dependabot proposes digest bumps (.github/dependabot.yml).
-FROM oven/bun:1.3-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS base
+FROM oven/bun:1.4-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f AS base
 WORKDIR /app
 
 COPY package.json bun.lock* ./
