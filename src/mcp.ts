@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { API_CATALOGS, catalogFor, endpointFor, type ApiEndpoint } from "./apiCatalog.js";
+import type { ToolTier } from "./mcpEndpoints.js";
 import { buildUrl, callService, interpolatePath } from "./serviceClient.js";
 import {
   assertShellAllowed,
@@ -27,7 +28,7 @@ import { SERVICE_METHODS, type ServiceDefinition, type ServiceId, type ServiceMe
  * reach a root shell or a state-changing API. Chosen per endpoint in index.ts,
  * not per request.
  */
-export type ToolTier = "read" | "admin";
+export type { ToolTier };
 
 /**
  * Who is making this request and under which request id. Threaded into every
@@ -230,7 +231,8 @@ function registerStatusTools(server: McpServer, services: ServiceDefinition[], e
             const result = await callService(
               service,
               { method: "GET", path: service.pingPath },
-              { timeoutMs: PING_TIMEOUT_MS, operationId: "ping", ...ctx },
+              // Ping paths are not all catalogued, so only the read credential applies here.
+              { timeoutMs: PING_TIMEOUT_MS, operationId: "ping", readOnly: tier === "read", ...ctx },
             );
             const durationMs = Math.round(performance.now() - start);
             const res = result as Record<string, unknown>;
@@ -398,7 +400,7 @@ export function isReadOnlyUrl(service: ServiceDefinition, url: URL): boolean {
 }
 
 function registerServiceTools(server: McpServer, service: ServiceDefinition, upstreamTimeoutMs: number, ctx: RequestContext, tier: ToolTier): void {
-  const readPolicy = tier === "read" ? { allowUrl: (url: URL) => isReadOnlyUrl(service, url) } : {};
+  const readPolicy = tier === "read" ? { allowUrl: (url: URL) => isReadOnlyUrl(service, url), readOnly: true } : {};
   const readNote = tier === "read" ? " This endpoint runs on the read tier: only GET operations not marked destructive are available." : "";
 
   server.tool(

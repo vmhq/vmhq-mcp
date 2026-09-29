@@ -1,6 +1,8 @@
 import type { ServiceDefinition } from "./services.js";
 import { allowedRedirectHosts } from "./oauth/redirectUri.js";
 import { log } from "./logger.js";
+import { STATIC_TOKEN_TIERS, type StaticTokenTier } from "./mcpEndpoints.js";
+import { adminClientIds } from "./oauth/adminClients.js";
 import { isPrivateHost, serviceFromRegistryEntry, SERVICE_REGISTRY } from "./serviceRegistry.js";
 import { isAllowedShell, type ProxmoxSshConfig } from "./sshClient.js";
 import { trustedIpHeader } from "./rateLimit.js";
@@ -43,12 +45,23 @@ function requireAccessToken(): string {
   return token;
 }
 
+/** MCP_STATIC_TOKEN_TIER, validated. Defaults to the read endpoint only. */
+export function readStaticTokenTier(): StaticTokenTier {
+  const raw = readEnv("MCP_STATIC_TOKEN_TIER", "read").trim().toLowerCase() || "read";
+  if (!(STATIC_TOKEN_TIERS as readonly string[]).includes(raw)) {
+    throw new Error(`MCP_STATIC_TOKEN_TIER must be one of ${STATIC_TOKEN_TIERS.join(", ")}. Got: ${raw}`);
+  }
+  return raw as StaticTokenTier;
+}
+
 
 export type AppConfig = {
   port: number;
   publicUrl?: string;
   iconUrl: string;
+  /** Empty when staticTokenTier is "off": the static token then opens nothing. */
   accessToken: string;
+  staticTokenTier: StaticTokenTier;
   corsOrigin?: string;
   upstreamTimeoutMs: number;
   services: ServiceDefinition[];
@@ -201,6 +214,37 @@ export function loadConfig(): AppConfig {
     .filter(Boolean);
 
   const publicUrl = readEnv("MCP_PUBLIC_URL") || undefined;
+  const pocketId = loadPocketIdConfig();
+
+  // Tokens are bound to <MCP_PUBLIC_URL>/mcp or /mcp/read, and that binding is
+  // what decides which tier they open. Without a public URL the server cannot
+  // name its own endpoints, so the audience check would be skipped entirely.
+  if (pocketId && !publicUrl) {
+    throw new Error(
+      "MCP_PUBLIC_URL is required when PocketID is configured: issued tokens are bound to <MCP_PUBLIC_URL>/mcp or /mcp/read.",
+    );
+  }
+
+  if (pocketId && adminClientIds().length === 0) {
+    log("error", "oauth_admin_clients_not_pinned", {
+      hint: "Set MCP_ADMIN_CLIENT_IDS to the client ids allowed to use /mcp (the admin tier). Until then any client that completes a sign-in can.",
+    });
+  }
+
+  // An email in the allowlist is only honoured when the provider marks it
+  // verified; the OIDC subject cannot be edited by the user and is the better key.
+  if (allowedSubjects.some((entry) => entry.includes("@"))) {
+    log("error", "oauth_subject_allowlist_uses_email", {
+      hint: "MCP_ALLOWED_SUBJECTS matches emails only when PocketID asserts email_verified. Prefer the OIDC subject (sub), shown by vmhq_sessions.",
+    });
+  }
+
+  const staticTokenTier = readStaticTokenTier();
+  if (staticTokenTier === "admin") {
+    log("error", "static_token_admin_tier", {
+      hint: "MCP_ACCESS_TOKEN opens the admin endpoint. It never expires and names no one; set MCP_STATIC_TOKEN_TIER=read or off unless a client needs it.",
+    });
+  }
   const defaultIconUrl = publicUrl
     ? `${publicUrl.replace(/\/$/, "")}/icon.svg`
     : "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/lovable.svg";
@@ -209,11 +253,12 @@ export function loadConfig(): AppConfig {
     port: readNumberEnv("MCP_PORT", 3010),
     publicUrl,
     iconUrl: readEnv("MCP_ICON_URL", defaultIconUrl),
-    accessToken: requireAccessToken(),
+    accessToken: staticTokenTier === "off" ? "" : requireAccessToken(),
+    staticTokenTier,
     corsOrigin: readEnv("MCP_CORS_ORIGIN") || undefined,
     upstreamTimeoutMs: readNumberEnv("MCP_UPSTREAM_TIMEOUT_MS", 30_000),
     services,
-    pocketId: loadPocketIdConfig(),
+    pocketId,
     proxmoxSsh,
     allowedHosts,
   };

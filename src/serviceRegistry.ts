@@ -8,6 +8,8 @@ export type ServiceRegistryEntry = {
   defaultBaseUrl?: string;
   enabledWhenEnv?: string;
   auth: ServiceAuth | ((readEnv: (name: string, fallback?: string) => string) => ServiceAuth);
+  /** Optional read-only credential for the read tier; see ServiceDefinition.readAuth. */
+  readAuth?: (readEnv: (name: string, fallback?: string) => string) => ServiceAuth | undefined;
   defaultPathParams?: (readEnv: (name: string, fallback?: string) => string) => Record<string, string> | undefined;
   timeoutMs?: number;
   pingPath?: string;
@@ -98,6 +100,29 @@ function proxmoxAuth(readEnv: (name: string, fallback?: string) => string): Serv
   };
 }
 
+/**
+ * A second Proxmox API token for the read tier, ideally holding only the
+ * PVEAuditor role, so the upstream itself refuses writes from that tier.
+ */
+function proxmoxReadAuth(readEnv: (name: string, fallback?: string) => string): ServiceAuth | undefined {
+  const tokenId = readEnv("PROXMOX_READ_TOKEN_ID");
+  const tokenSecret = readEnv("PROXMOX_READ_TOKEN_SECRET");
+
+  if (!tokenId && !tokenSecret) {
+    return undefined;
+  }
+
+  if (!tokenId || !tokenSecret) {
+    throw new Error("PROXMOX_READ_TOKEN_ID and PROXMOX_READ_TOKEN_SECRET must be configured together.");
+  }
+
+  return {
+    type: "static",
+    headerName: "Authorization",
+    value: `PVEAPIToken=${tokenId}=${tokenSecret}`,
+  };
+}
+
 function minifluxAuth(readEnv: (name: string, fallback?: string) => string): ServiceAuth {
   const authMode = readEnv("MINIFLUX_AUTH_MODE", "x-auth-token");
   return authMode === "bearer"
@@ -154,6 +179,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     title: "Proxmox",
     baseUrlEnv: "PROXMOX_BASE_URL",
     auth: proxmoxAuth,
+    readAuth: proxmoxReadAuth,
     defaultPathPrefix: "/api2/json",
     timeoutMs: 120_000,
     pingPath: "/api2/json/version",
@@ -191,12 +217,14 @@ export function serviceFromRegistryEntry(
   }
 
   const auth = typeof entry.auth === "function" ? entry.auth(readEnv) : entry.auth;
+  const readAuth = entry.readAuth?.(readEnv);
 
   return {
     id: entry.id,
     title: entry.title,
     baseUrl,
     auth,
+    ...(readAuth ? { readAuth } : {}),
     defaultPathPrefix: entry.defaultPathPrefix,
     defaultPathParams: entry.defaultPathParams?.(readEnv),
     timeoutMs: entry.timeoutMs,

@@ -9,6 +9,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { log } from "../logger.js";
+import { adminClientIds } from "./adminClients.js";
 
 export type RegisteredClient = {
   clientId: string;
@@ -21,6 +22,8 @@ export type RegisteredClient = {
 export type Identity = {
   subject: string;
   email?: string;
+  /** The provider asserted the email is verified. Only then may it match MCP_ALLOWED_SUBJECTS. */
+  emailVerified?: boolean;
 };
 
 /** Log-friendly name for an identity: the email if there is one, else the sub. */
@@ -80,6 +83,10 @@ export type StoredRefreshToken = {
  * A pending authorization while the user is being redirected through PocketID.
  * Created at GET /oauth/authorize, consumed at GET /oauth/callback. Keyed by an
  * opaque transaction id that is passed to PocketID as its `state` parameter.
+ *
+ * Held in memory only. Anyone can open /oauth/authorize, so persisting these
+ * meant a synchronous rewrite of the state file per anonymous request; the
+ * price is that a restart in the middle of a sign-in makes the user start over.
  */
 export type PendingAuth = {
   /** Browser secret hash and explicit consent; legacy transactions are rejected. */
@@ -105,7 +112,7 @@ export type PendingAuth = {
 
 export const clients = new Map<string, RegisteredClient>();
 export const codes = new Map<string, AuthorizationCode>();
-/** transaction id → PendingAuth (PocketID round-trip) */
+/** transaction id → PendingAuth (PocketID round-trip). Never persisted. */
 export const pendingAuth = new Map<string, PendingAuth>();
 /** token SHA-256 hash → StoredToken */
 export const accessTokens = new Map<string, StoredToken>();
@@ -172,6 +179,14 @@ export const SESSION_MAX_S = (() => {
 export const MAX_REGISTERED_CLIENTS = 200;
 
 /**
+ * Caps on pending authorizations. /oauth/authorize is public and each call
+ * creates one, so without a bound the table grows with whatever an anonymous
+ * caller sends. A person signing in needs one, maybe a couple after a retry.
+ */
+export const MAX_PENDING_AUTH = 100;
+export const MAX_PENDING_AUTH_PER_CLIENT = 3;
+
+/**
  * Clients outlive their tokens: prune 30 days after the longest-lived
  * credential they can hold. Measured against the refresh TTL, not the access
  * TTL, so a short access token cannot cause a client to be pruned while its own
@@ -195,7 +210,6 @@ function loadState(): void {
     const saved = JSON.parse(raw) as {
       clients?: Array<[string, RegisteredClient]>;
       authorizationCodes?: Array<[string, AuthorizationCode]>;
-      pendingAuth?: Array<[string, PendingAuth]>;
       accessTokens?: Array<[string, StoredToken | number]>;
       refreshTokens?: Array<[string, StoredRefreshToken]>;
       consumedRefreshTokens?: Array<[string, { familyId: string; expiresAt: number }]>;
@@ -219,11 +233,9 @@ function loadState(): void {
       }
     }
 
-    if (Array.isArray(saved.pendingAuth)) {
-      for (const [txn, p] of saved.pendingAuth) {
-        if (p.expiresAt > now) pendingAuth.set(txn, p);
-      }
-    }
+    // Files written before pending transactions moved to memory still carry a
+    // `pendingAuth` array. It is ignored: those transactions could only be
+    // finished by the browser that started them, and that browser can retry.
 
     if (Array.isArray(saved.accessTokens)) {
       for (const [hash, data] of saved.accessTokens) {
@@ -259,7 +271,6 @@ export function saveState(): void {
     const payload = {
       clients: [...clients.entries()],
       authorizationCodes: [...codes.entries()],
-      pendingAuth: [...pendingAuth.entries()],
       accessTokens: [...accessTokens.entries()],
       refreshTokens: [...refreshTokens.entries()],
       consumedRefreshTokens: [...consumedRefreshTokens.entries()],
@@ -279,8 +290,9 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   for (const [code, ac] of codes) {
     if (ac.expiresAt <= now) { codes.delete(code); dirty = true; }
   }
+  // Pending transactions are not persisted, so dropping them dirties nothing.
   for (const [txn, p] of pendingAuth) {
-    if (p.expiresAt <= now) { pendingAuth.delete(txn); dirty = true; }
+    if (p.expiresAt <= now) pendingAuth.delete(txn);
   }
   for (const [hash, tok] of accessTokens) {
     if (tok.expiresAt <= now) { accessTokens.delete(hash); dirty = true; }
@@ -293,7 +305,10 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   for (const [hash, entry] of consumedRefreshTokens) {
     if (entry.expiresAt <= now) { consumedRefreshTokens.delete(hash); dirty = true; }
   }
+  const pinned = adminClientIds();
   for (const [id, client] of clients) {
+    // Pinned clients are named in the configuration, so age must not remove them.
+    if (pinned.includes(id)) continue;
     // Guard against a non-finite timestamp so the comparison can't silently
     // evaluate to false and keep a client alive forever.
     const issuedAtMs = Number.isFinite(client.clientIdIssuedAt) ? client.clientIdIssuedAt * 1000 : 0;
@@ -303,14 +318,45 @@ export function pruneExpiredOAuthState(now = Date.now()): void {
   if (dirty) saveState();
 }
 
-/** Client ids that still hold an access token, a refresh token, or a pending code. */
+/**
+ * Client ids that still hold an access token, a refresh token or an issued
+ * code. A pending, unapproved authorization is not a credential: anyone can
+ * create one, and counting it let an anonymous caller keep every slot occupied
+ * by reopening /oauth/authorize for clients of their own.
+ */
 function clientsWithCredentials(): Set<string> {
   const live = new Set<string>();
   for (const token of accessTokens.values()) live.add(token.clientId);
   for (const token of refreshTokens.values()) live.add(token.clientId);
   for (const code of codes.values()) live.add(code.clientId);
-  for (const pending of pendingAuth.values()) live.add(pending.clientId);
+  for (const id of adminClientIds()) live.add(id);
   return live;
+}
+
+/**
+ * Makes room for one more pending authorization for `clientId`, dropping the
+ * oldest ones first: that client's own beyond MAX_PENDING_AUTH_PER_CLIENT, then
+ * anyone's beyond MAX_PENDING_AUTH. Map order is insertion order, so the first
+ * match is always the oldest.
+ *
+ * The global pass skips clients pinned in MCP_ADMIN_CLIENT_IDS, so flooding
+ * /oauth/authorize cannot push the owner's own sign-in out mid-flow. Their
+ * entries stay bounded by the per-client cap.
+ */
+export function admitPendingAuth(
+  clientId: string,
+  limits = { total: MAX_PENDING_AUTH, perClient: MAX_PENDING_AUTH_PER_CLIENT },
+): void {
+  const own = [...pendingAuth].filter(([, pending]) => pending.clientId === clientId);
+  for (const [txn] of own.slice(0, Math.max(0, own.length - limits.perClient + 1))) {
+    pendingAuth.delete(txn);
+  }
+  const pinned = adminClientIds();
+  for (const [txn, pending] of pendingAuth) {
+    if (pendingAuth.size < limits.total) break;
+    if (pinned.includes(pending.clientId)) continue;
+    pendingAuth.delete(txn);
+  }
 }
 
 /**

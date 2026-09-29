@@ -35,3 +35,28 @@ Tests use simulated upstreams and local HTTP/SSH servers. Production services we
 - [qs array limit advisory](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx)
 - [qs isBuffer advisory](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g)
 - [OIDC discovery](https://openid.net/specs/openid-connect-discovery-1_0.html)
+
+# Security remediation — 2026-09-27
+
+Follow-up to a review of the state after the 2026-09-04 round. Findings 2–6 of that review are addressed here; finding 1 (the day-to-day connector pointing at `/mcp`) is a deployment change, described under rollout.
+
+## Changes
+
+1. **Tokens bound to a tier.** `/oauth/authorize` binds every request to `<MCP_PUBLIC_URL>/mcp` or `/mcp/read`. A request without `resource` gets `/mcp/read`; a resource naming another server is refused. Tokens persisted without a resource are judged as `/mcp/read` tokens, so they no longer open the admin tier. `MCP_PUBLIC_URL` is required when PocketID is configured, because without it the audience check was skipped.
+2. **Pending authorizations bounded.** `pendingAuth` is in memory only (no state-file rewrite per anonymous `/oauth/authorize`), capped at 100 in total and 3 per client, oldest first; the global cap never evicts a pinned admin client's entries, so a flood cannot interrupt the owner's sign-in. A pending authorization no longer marks its client as holding a credential, so an anonymous caller cannot fill all 200 client slots and block registration with 503.
+3. **Admin clients pinned.** `MCP_ADMIN_CLIENT_IDS` lists the clients allowed to start an admin authorization or use an admin token; others get an error page naming their id (authorize) or a 401 (on `/mcp`). Pinned clients are never aged out or evicted. This closes the consent-phishing path where a stranger's freshly registered client (for example another claude.ai account) sends an ordinary looking consent link.
+4. **Static token scoped.** `MCP_STATIC_TOKEN_TIER` = `read` (default) | `admin` | `off`. `/openapi.json` and `/docs` count as admin. With `off`, `MCP_ACCESS_TOKEN` is optional and an empty bearer never matches.
+5. **Upstream headers.** Method-override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`), forwarding (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`) and `Proxy-Authorization` headers are dropped on every tier; the read tier forwards only `Accept`, `Accept-Language`, `If-None-Match`, `If-Modified-Since` and `Range`. Headers are merged case-insensitively with the credential set last. Invalid header names return `invalid_request`.
+6. **Read-only upstream credential.** `PROXMOX_READ_TOKEN_ID` / `PROXMOX_READ_TOKEN_SECRET` back the read tier with a Proxmox token that should hold only PVEAuditor.
+7. **Verified emails only.** `MCP_ALLOWED_SUBJECTS` matches an email only when the id_token asserts `email_verified: true`; `vmhq_sessions` lists each session's `subject`, and startup warns when the allowlist holds emails.
+8. **Image.** `oven/bun:1.3-alpine` pinned by digest, production-only install, Dependabot for Docker, GitHub Actions and Bun.
+
+## Rollout
+
+- Point the day-to-day connector at `/mcp/read`; keep a separate `/mcp` connector for maintenance and never "always allow" the exec tools.
+- Connectors on `/mcp` whose tokens were issued without a resource must reconnect once.
+- Connect the admin connector, copy the client id from the error page (or the `oauth_admin_client_not_pinned` log line) into `MCP_ADMIN_CLIENT_IDS`, restart, connect again.
+- Replace emails in `MCP_ALLOWED_SUBJECTS` with the subject shown by `vmhq_sessions`.
+- Set `MCP_STATIC_TOKEN_TIER=admin` only if a client needs the static token on `/mcp`.
+- Optional: create a PVEAuditor API token and set `PROXMOX_READ_TOKEN_ID` / `PROXMOX_READ_TOKEN_SECRET`.
+- Still deployment-specific and unchanged: pin `MCP_TRUSTED_IP_HEADER=cf-connecting-ip` behind Cloudflare, set `MCP_ALLOWED_REDIRECT_HOSTS=claude.ai`.

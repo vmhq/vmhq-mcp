@@ -510,3 +510,83 @@ describe("redirect handling", () => {
     expect(result.response?.status).toBe(302);
   });
 });
+
+describe("forwarded request headers", () => {
+  function echoServer(): { port: number; seen: () => Record<string, string> } {
+    let seen: Record<string, string> = {};
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        seen = Object.fromEntries(req.headers.entries());
+        return Response.json({ ok: true });
+      },
+    });
+    servers.push(server);
+    return { port: server.port!, seen: () => seen };
+  }
+
+  const smuggled = {
+    "X-HTTP-Method-Override": "DELETE",
+    "X-Method-Override": "DELETE",
+    "X-Forwarded-For": "10.0.0.1",
+    "X-Forwarded-Host": "evil.example",
+    Forwarded: "for=10.0.0.1",
+    "X-Real-IP": "10.0.0.1",
+    "Proxy-Authorization": "Basic Zm9vOmJhcg==",
+    "Accept-Language": "es",
+    "X-Custom": "ok",
+  };
+
+  test("admin tier drops method overrides and forwarding headers, keeps the rest", async () => {
+    const upstream = echoServer();
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${upstream.port}/v1` };
+    await callService(service, { method: "GET", path: "/me", headers: smuggled }, { timeoutMs: 1_000 });
+    const seen = upstream.seen();
+    for (const name of ["x-http-method-override", "x-method-override", "x-forwarded-for", "x-forwarded-host", "forwarded", "x-real-ip", "proxy-authorization"]) {
+      expect(seen[name]).toBeUndefined();
+    }
+    expect(seen["x-custom"]).toBe("ok");
+    expect(seen["accept-language"]).toBe("es");
+  });
+
+  test("read tier forwards only content negotiation and caching headers", async () => {
+    const upstream = echoServer();
+    const service: ServiceDefinition = { ...baseService, baseUrl: `http://127.0.0.1:${upstream.port}/v1` };
+    await callService(service, { method: "GET", path: "/me", headers: smuggled }, { timeoutMs: 1_000, readOnly: true });
+    const seen = upstream.seen();
+    expect(seen["x-custom"]).toBeUndefined();
+    expect(seen["x-http-method-override"]).toBeUndefined();
+    expect(seen["accept-language"]).toBe("es");
+  });
+
+  test("a differently cased copy of the credential header cannot join the real one", async () => {
+    process.env.TEST_MINIFLUX_TOKEN = "real-token";
+    const upstream = echoServer();
+    const service: ServiceDefinition = {
+      ...baseService,
+      baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+      auth: { type: "header", tokenEnv: "TEST_MINIFLUX_TOKEN", headerName: "X-Session-Key" },
+    };
+    await callService(service, { method: "GET", path: "/me", headers: { "x-session-key": "attacker" } }, { timeoutMs: 1_000 });
+    expect(upstream.seen()["x-session-key"]).toBe("real-token");
+  });
+
+  test("an invalid header name is a normalized error, not a crash", async () => {
+    const result = await callService(baseService, { method: "GET", path: "/me", headers: { "bad header": "x" } }, { timeoutMs: 1_000 });
+    expect(result).toMatchObject({ error: { type: "invalid_request" } });
+  });
+
+  test("the read tier uses the read-only credential when one is configured", async () => {
+    const upstream = echoServer();
+    const service: ServiceDefinition = {
+      ...baseService,
+      baseUrl: `http://127.0.0.1:${upstream.port}/v1`,
+      auth: { type: "static", headerName: "Authorization", value: "PVEAPIToken=admin" },
+      readAuth: { type: "static", headerName: "Authorization", value: "PVEAPIToken=auditor" },
+    };
+    await callService(service, { method: "GET", path: "/me" }, { timeoutMs: 1_000, readOnly: true });
+    expect(upstream.seen().authorization).toBe("PVEAPIToken=auditor");
+    await callService(service, { method: "GET", path: "/me" }, { timeoutMs: 1_000 });
+    expect(upstream.seen().authorization).toBe("PVEAPIToken=admin");
+  });
+});

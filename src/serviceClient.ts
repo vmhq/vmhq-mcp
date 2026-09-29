@@ -1,15 +1,33 @@
 import { log } from "./logger.js";
-import type { ServiceDefinition, ServiceRequestInput } from "./services.js";
+import type { ServiceAuth, ServiceDefinition, ServiceRequestInput } from "./services.js";
 
+/**
+ * Caller headers that are never forwarded: credentials (the server injects its
+ * own), framing, and anything that asks the upstream to treat the request as
+ * something it is not — another method, another client address, another hop.
+ */
 const BLOCKED_REQUEST_HEADERS = new Set([
   "authorization",
+  "proxy-authorization",
   "cookie",
   "host",
   "x-api-key",
   "x-auth-token",
   "content-length",
   "transfer-encoding",
+  "x-http-method-override",
+  "x-http-method",
+  "x-method-override",
+  "forwarded",
+  "x-real-ip",
 ]);
+
+/**
+ * The only caller headers the read tier forwards. The tier exists for sessions
+ * that ingest third-party text, so the model gets content negotiation and
+ * caching, and nothing that could change how the upstream reads the request.
+ */
+const READ_TIER_HEADERS = new Set(["accept", "accept-language", "if-none-match", "if-modified-since", "range"]);
 
 const RESPONSE_HEADERS = ["content-type", "etag", "last-modified", "x-total-count"];
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
@@ -34,49 +52,50 @@ function normalizedError(type: NormalizedErrorType, service: ServiceDefinition, 
   };
 }
 
-function requiredTokenEnv(service: ServiceDefinition): string | undefined {
-  if (service.auth.type === "bearer" || service.auth.type === "header" || service.auth.type === "prefixed") {
-    return service.auth.tokenEnv;
+function requiredTokenEnv(auth: ServiceAuth): string | undefined {
+  if (auth.type === "bearer" || auth.type === "header" || auth.type === "prefixed") {
+    return auth.tokenEnv;
   }
   return undefined;
 }
 
-function serviceToken(service: ServiceDefinition): string {
-  const tokenEnv = requiredTokenEnv(service);
+function serviceToken(auth: ServiceAuth): string {
+  const tokenEnv = requiredTokenEnv(auth);
   return tokenEnv ? process.env[tokenEnv] ?? "" : "";
 }
 
-function authHeaders(service: ServiceDefinition): Record<string, string> {
-  if (service.auth.type === "none") {
+function authHeaders(auth: ServiceAuth): Record<string, string> {
+  if (auth.type === "none") {
     return {};
   }
 
-  if (service.auth.type === "static") {
-    return { [service.auth.headerName]: service.auth.value };
+  if (auth.type === "static") {
+    return { [auth.headerName]: auth.value };
   }
 
-  const token = serviceToken(service);
+  const token = serviceToken(auth);
 
   if (!token) {
     return {};
   }
 
-  if (service.auth.type === "bearer") {
+  if (auth.type === "bearer") {
     return { Authorization: `Bearer ${token}` };
   }
 
-  if (service.auth.type === "header") {
-    return { [service.auth.headerName]: token };
+  if (auth.type === "header") {
+    return { [auth.headerName]: token };
   }
 
-  return { Authorization: `${service.auth.prefix}${token}` };
+  return { Authorization: `${auth.prefix}${token}` };
 }
 
-function cleanHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+function cleanHeaders(headers: Record<string, string> | undefined, readOnly = false): Record<string, string> {
   const cleaned: Record<string, string> = {};
 
   for (const [name, value] of Object.entries(headers ?? {})) {
-    if (BLOCKED_REQUEST_HEADERS.has(name.toLowerCase())) {
+    const lower = name.toLowerCase();
+    if (readOnly ? !READ_TIER_HEADERS.has(lower) : BLOCKED_REQUEST_HEADERS.has(lower) || lower.startsWith("x-forwarded-")) {
       continue;
     }
 
@@ -84,6 +103,18 @@ function cleanHeaders(headers: Record<string, string> | undefined): Record<strin
   }
 
   return cleaned;
+}
+
+/**
+ * Assembles the outgoing headers in a Headers object, so names compare
+ * case-insensitively: the server's credential is set last and replaces any
+ * caller header of the same name rather than being merged with it.
+ */
+function requestHeaders(input: ServiceRequestInput, auth: ServiceAuth, readOnly: boolean): Headers {
+  const headers = new Headers({ Accept: "application/json, text/plain;q=0.9, */*;q=0.8" });
+  for (const [name, value] of Object.entries(cleanHeaders(input.headers, readOnly))) headers.set(name, value);
+  for (const [name, value] of Object.entries(authHeaders(auth))) headers.set(name, value);
+  return headers;
 }
 
 export function interpolatePath(path: string, pathParams: Record<string, string | number> = {}): string {
@@ -343,6 +374,11 @@ function redirectTarget(response: Response, current: URL): URL | undefined {
 
 export type CallServiceOptions = {
   allowUrl?: (url: URL) => boolean;
+  /**
+   * Read tier: forward only READ_TIER_HEADERS from the caller, and use the
+   * service's read-only credential when one is configured.
+   */
+  readOnly?: boolean;
   timeoutMs?: number;
   operationId?: string;
   requestId?: string;
@@ -356,6 +392,8 @@ export async function callService(
   options: CallServiceOptions = {},
 ): Promise<unknown> {
   const startedAt = performance.now();
+  const readOnly = options.readOnly === true;
+  const auth = readOnly && service.readAuth ? service.readAuth : service.auth;
   let url: URL;
 
   try {
@@ -365,16 +403,18 @@ export async function callService(
     return normalizedError("invalid_request", service, error instanceof Error ? error.message : "Invalid request.");
   }
 
-  const tokenEnv = requiredTokenEnv(service);
-  if (tokenEnv && !serviceToken(service)) {
+  const tokenEnv = requiredTokenEnv(auth);
+  if (tokenEnv && !serviceToken(auth)) {
     return normalizedError("missing_upstream_credentials", service, `Missing required credential environment variable: ${tokenEnv}`);
   }
 
-  const headers: Record<string, string> = {
-    Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
-    ...cleanHeaders(input.headers),
-    ...authHeaders(service),
-  };
+  let headers: Headers;
+  try {
+    headers = requestHeaders(input, auth, readOnly);
+  } catch (error) {
+    // Headers rejects names and values that are not valid HTTP.
+    return normalizedError("invalid_request", service, error instanceof Error ? error.message : "Invalid header.");
+  }
 
   let body: BodyInit | undefined;
 
@@ -383,7 +423,7 @@ export async function callService(
       body = buildFormData(input.body);
     } else {
       body = typeof input.body === "string" ? input.body : JSON.stringify(input.body);
-      headers["Content-Type"] ??= "application/json";
+      if (!headers.has("content-type")) headers.set("Content-Type", "application/json");
     }
   }
 

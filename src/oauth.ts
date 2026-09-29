@@ -33,6 +33,7 @@ export {
   CLAUDE_WEB_AUTH_CALLBACK,
   canonicalRedirectUri,
 } from "./oauth/redirectUri.js";
+export { isAdminClient } from "./oauth/adminClients.js";
 export {
   constantTimeEqual,
   pruneExpiredOAuthState,

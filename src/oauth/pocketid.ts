@@ -35,6 +35,8 @@ export type PocketIdIdentity = {
   /** OIDC `sub`: stable per user, the thing worth storing and revoking by. */
   subject: string;
   email?: string;
+  /** Only true when the provider asserts `email_verified: true`. */
+  emailVerified?: boolean;
   name?: string;
 };
 
@@ -132,6 +134,7 @@ async function verifyIdToken(cfg: PocketIdConfig, discovery: Discovery, idToken:
   return {
     subject,
     ...(typeof payload.email === "string" ? { email: payload.email } : {}),
+    ...(payload.email_verified === true ? { emailVerified: true } : {}),
     ...(typeof payload.name === "string" ? { name: payload.name } : {}),
   };
 }

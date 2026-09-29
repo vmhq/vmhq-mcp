@@ -18,6 +18,12 @@ export type ServiceDefinition = {
   title: string;
   baseUrl: string;
   auth: ServiceAuth;
+  /**
+   * Credential used by the read tier instead of `auth`, when the upstream
+   * offers a read-only one (a Proxmox token with the PVEAuditor role). Gives
+   * the read tier a limit the upstream enforces, not only this server.
+   */
+  readAuth?: ServiceAuth;
   defaultPathPrefix: string;
   defaultPathParams?: Record<string, string>;
   timeoutMs?: number;
