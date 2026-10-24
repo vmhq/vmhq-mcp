@@ -11,18 +11,19 @@
     "build": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "jose": "^6.2.10",
     "ssh2": "^1.17.0",
-    "zod": "^3.25.76"
+    "zod": "^4.6.7"
   },
   "overrides": {
-    "hono": "^4.13.5",
+    "hono": "^4.13.13",
     "qs": "^6.16.0",
-    "fast-uri": "^3.1.8",
-    "ip-address": "^10.7.0",
-    "body-parser": "^2.3.0",
-    "@hono/node-server": "^1.19.15"
+    "fast-uri": "^3.1.9",
+    "ip-address": "^10.7.4",
+    "body-parser": "^2.4.0",
+    "@hono/node-server": "^1.19.15",
+    "proxy-addr": "^2.0.8"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

@@ -60,9 +60,9 @@ const queryValueSchema = z.union([
 ]);
 
 const commonRequestFields = {
-  query: z.record(queryValueSchema).optional().describe("Optional query string parameters."),
+  query: z.record(z.string(), queryValueSchema).optional().describe("Optional query string parameters."),
   body: z.unknown().optional().describe("Optional JSON request body for non-GET methods."),
-  headers: z.record(z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
+  headers: z.record(z.string(), z.string()).optional().describe("Optional extra headers. Auth headers are ignored."),
   fields: z.array(z.string()).optional().describe("Optional list of field names to keep from JSON response objects. Useful for large arrays like /api/states to reduce token usage."),
   maxLength: z.number().optional().describe("Optional maximum response length in characters. Responses exceeding this will be truncated."),
 };
@@ -80,7 +80,7 @@ const apiReferenceSchema = {
 
 const apiOperationSchema = {
   operationId: z.string().min(1).describe("Operation ID from the matching *_api_reference tool."),
-  pathParams: z.record(z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {memo}."),
+  pathParams: z.record(z.string(), z.union([z.string(), z.number()])).optional().describe("Values for path placeholders such as {node}, {vmid}, {memo}."),
   ...commonRequestFields,
 };
 
