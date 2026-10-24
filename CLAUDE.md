@@ -12,7 +12,7 @@ bun run typecheck    # type-check with tsc --noEmit (no compilation output)
 bun test             # run the Bun test suite
 ```
 
-Correctness gates are `bun run typecheck` and `bun test`. The current tests live under `tests/` and cover OAuth behavior plus service client URL/auth/error handling. CI runs both gates before building the Docker image.
+Correctness gates are `bun run typecheck` and `bun test`. The current tests live under `tests/` and cover OAuth behavior plus service client URL/auth/error handling. CI runs both gates before building the Docker image, which is built for `linux/amd64` and `linux/arm64` on native runners (no QEMU), pushed by digest, and joined into one multi-arch manifest by the `merge` job.
 
 ## Architecture
 

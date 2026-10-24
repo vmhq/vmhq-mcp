@@ -49,7 +49,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Full example:
+Full example (`ghcr.io/vmhq/vmhq-mcp` is published for `linux/amd64` and `linux/arm64`; Docker pulls the matching one):
 
 ```yaml
 services:
