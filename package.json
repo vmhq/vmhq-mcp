@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "jose": "^6.2.10",
+    "jose": "^6.2.13",
     "ssh2": "^1.17.0",
     "zod": "^4.6.7"
   },
