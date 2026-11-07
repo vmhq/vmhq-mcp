@@ -190,8 +190,9 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     title: "Memos",
     baseUrlEnv: "MEMOS_BASE_URL",
     auth: bearerAuth("MEMOS_TOKEN"),
-    defaultPathPrefix: "/api/v1",
-    pingPath: "/api/v1/instance/profile",
+    // Memos 26.10.0 dropped the /api/v1 prefix; /api/v1 now answers 410 Gone.
+    defaultPathPrefix: "/api",
+    pingPath: "/api/instance/profile",
   },
   {
     id: "adguard",
